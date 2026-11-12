@@ -7,6 +7,7 @@ from urllib.parse import urljoin, urlsplit
 from bs4 import BeautifulSoup
 from googlenewsdecoder import gnewsdecoder
 from trafilatura import extract
+from programme import channel, schedule
 
 
 def preview(body, translate):
@@ -49,6 +50,9 @@ def enrich(items, sites, read, translate):
                 return
             if not urlsplit(link).path.strip("/"):
                 return
+            if channel(item["source_name"],"",link):
+                item["channel_page"]=True
+                return
             item["url"]=link
             html=read(link)
             page=BeautifulSoup(html,"html.parser")
@@ -74,12 +78,12 @@ def enrich(items, sites, read, translate):
                     if isinstance(node.get("articleBody"),str):
                         candidates.append(BeautifulSoup(node["articleBody"],"html.parser").get_text(" ",strip=True))
             candidates.append(extract(html,include_comments=False,include_tables=False,favor_precision=True) or "")
-            body=max(candidates,key=len)
+            body=next((value for value in candidates if value.strip() and not schedule(value)), "")
             lines=[line for line in body.splitlines() if not re.match(r"^(?:责编[：:]|责任编辑[：:]|正在播放$|来自香港$|• 来源|ABC News Live is)",line.strip(),re.I)]
             body="\n".join(lines).strip()
             meta=page.select_one('meta[property="og:description"],meta[name="description"]')
             description=meta.get("content","").strip() if meta else ""
-            if len(body)<100 and len(description)>len(body):body=description
+            if not schedule(description) and len(body)<100 and len(description)>len(body):body=description
             text,complete=preview(body,translate)
             if text and text.strip()!=item["title"] and (complete or len(text)>len(item["reading_text"])):
                 item["reading_text"]=text

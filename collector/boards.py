@@ -10,6 +10,7 @@ from difflib import SequenceMatcher
 from urllib.parse import urlencode, urlsplit
 
 from reading import enrich
+from programme import channel, schedule
 import feedparser
 from bs4 import BeautifulSoup
 
@@ -90,12 +91,12 @@ def collect(relevant):
         rows=[row for _,row in ranked]
         count=0
         for title,link,summary,image,stamp in rows[:35]:
-            if link in urls:continue
+            if link in urls or channel(name,title,link):continue
             try:title=chinese(title)
             except (OSError,ValueError):continue
             key=re.sub(r"[^一-鿿a-z0-9]","",title.lower())
             if not key or not relevant(title) or duplicate(key,seen):continue
-            try:summary=chinese(summary)
+            try:summary="" if schedule(summary) else chinese(summary)
             except (OSError,ValueError):summary=""
             cat="社会与突发"
             for pattern,category in [("外交|总统|议会|大选|军队|战争|会谈|部长","国际政治"),("利率|股市|经济|财报|银行","全球经济金融"),("芯片|科技|人工智能|机器人|航天","AI与科技")]:
@@ -105,4 +106,4 @@ def collect(relevant):
             if count==5:break
         if count<5:errors.append(dict(source=name,error=f"本轮取得 {count} 条可展示新闻"))
     enrich(items,SITES,read,chinese)
-    return items,errors
+    return [item for item in items if not item.get("channel_page")],errors
