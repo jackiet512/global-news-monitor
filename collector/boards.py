@@ -9,6 +9,7 @@ from datetime import datetime, timezone, timedelta
 from difflib import SequenceMatcher
 from urllib.parse import urlencode, urlsplit
 
+from reading import enrich
 import feedparser
 from bs4 import BeautifulSoup
 
@@ -103,4 +104,5 @@ def collect(relevant):
             seen.add(key);urls.add(link);count+=1
             if count==5:break
         if count<5:errors.append(dict(source=name,error=f"本轮取得 {count} 条可展示新闻"))
+    enrich(items,SITES,read,chinese)
     return items,errors
