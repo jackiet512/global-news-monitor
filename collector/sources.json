@@ -1,0 +1,9 @@
+{
+  "sources": [
+    {"name":"Reuters World","url":"https://feeds.reuters.com/Reuters/worldNews","category":"国际政治","language":"en","enabled":true},
+    {"name":"BBC World","url":"https://feeds.bbci.co.uk/news/world/rss.xml","category":"国际政治","language":"en","enabled":true},
+    {"name":"BBC Technology","url":"https://feeds.bbci.co.uk/news/technology/rss.xml","category":"AI与科技","language":"en","enabled":true},
+    {"name":"NVIDIA Newsroom","url":"https://nvidianews.nvidia.com/news? 모=rss","category":"AI与科技","language":"en","enabled":false},
+    {"name":"Anthropic News","url":"https://www.anthropic.com/news/rss.xml","category":"AI与科技","language":"en","enabled":false}
+  ]
+}
