@@ -11,6 +11,7 @@ from urllib.parse import urlencode, urlsplit
 
 from reading import enrich
 from events import signals, same_event, incident_clues, matching_incident
+from headlines import publication_metadata
 from programme import channel, schedule
 import feedparser
 from bs4 import BeautifulSoup
@@ -96,12 +97,12 @@ def collect(relevant):
         rows=[row for _,row in ranked]
         count=0
         for title,link,summary,image,stamp in rows[:35]:
-            if link in urls or channel(name,title,link):continue
+            if publication_metadata(title) or link in urls or channel(name,title,link):continue
             original=title
             try:title=chinese(title)
             except (OSError,ValueError):continue
             key=re.sub(r"[^一-鿿a-z0-9]","",title.lower())
-            if not key or not relevant(title) or duplicate(key,seen):continue
+            if not key or publication_metadata(title) or not relevant(title) or duplicate(key,seen):continue
             event=signals(original,title,stamp)
             if any(same_event(event,previous) for previous in events):continue
             try:summary="" if schedule(summary) else chinese(summary)
