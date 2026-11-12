@@ -10,6 +10,7 @@ from difflib import SequenceMatcher
 from urllib.parse import urlencode, urlsplit
 
 from reading import enrich
+from events import signals, same_event
 from programme import channel, schedule
 import feedparser
 from bs4 import BeautifulSoup
@@ -83,8 +84,11 @@ def collect(relevant):
     seen=set();urls=set();items=[];errors=[]
     with ThreadPoolExecutor(max_workers=10) as pool:
         boards=list(pool.map(fetch,SITES.items()))
+    events=[]
     signatures=[[terms(row[0]) for row in board] for board in boards]
-    for i,(name,rows) in enumerate(zip(SITES,boards)):
+    for i in sorted(range(len(boards)),key=lambda i:not bool(list(SITES.values())[i][1])):
+        name=list(SITES)[i]
+        rows=boards[i]
         # 同一话题被多个媒体关注时提高优先级，同分沿用来源顺序。
         others=signatures[:i]+signatures[i+1:]
         ranked=sorted(enumerate(rows),key=lambda pair:coverage(signatures[i][pair[0]],others),reverse=True)
@@ -92,16 +96,20 @@ def collect(relevant):
         count=0
         for title,link,summary,image,stamp in rows[:35]:
             if link in urls or channel(name,title,link):continue
+            original=title
             try:title=chinese(title)
             except (OSError,ValueError):continue
             key=re.sub(r"[^一-鿿a-z0-9]","",title.lower())
             if not key or not relevant(title) or duplicate(key,seen):continue
+            event=signals(original,title,stamp)
+            if any(same_event(event,previous) for previous in events):continue
             try:summary="" if schedule(summary) else chinese(summary)
             except (OSError,ValueError):summary=""
             cat="社会与突发"
             for pattern,category in [("外交|总统|议会|大选|军队|战争|会谈|部长","国际政治"),("利率|股市|经济|财报|银行","全球经济金融"),("芯片|科技|人工智能|机器人|航天","AI与科技")]:
                 if re.search(pattern,title):cat=category;break
             items.append(dict(title=title,url=link,source_name=name,category=cat,image_url=image,reading_text=summary,short_body=False,summary=summary,published_at=stamp,collected_at=datetime.now(BJ).isoformat(),verification_status="待核实",fingerprint=hashlib.sha256(link.encode()).hexdigest()))
+            events.append(event)
             seen.add(key);urls.add(link);count+=1
             if count==5:break
         if count<5:errors.append(dict(source=name,error=f"本轮取得 {count} 条可展示新闻"))
