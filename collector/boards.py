@@ -1,87 +1,88 @@
+"""从媒体要闻订阅或指定媒体的新闻索引选稿。"""
+import calendar
 import hashlib
 import json
 import re
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from difflib import SequenceMatcher
-from urllib.parse import urljoin
+from urllib.parse import urlencode, urlsplit
 
+import feedparser
 from bs4 import BeautifulSoup
 
-BOARDS = {
-    "澎湃新闻": "https://cache.thepaper.cn/contentapi/wwwIndex/rightSidebar",
-    "中国新闻网": "https://www.chinanews.com.cn/scroll-news/news1.html",
-    "IT之家": "https://www.ithome.com/",
+SITES = {
+    "路透社": ("reuters.com", ""),
+    "英国广播公司": ("bbc.com", "https://feeds.bbci.co.uk/news/rss.xml"),
+    "美国有线电视新闻网": ("cnn.com", ""),
+    "哥伦比亚广播公司": ("cbsnews.com", "https://www.cbsnews.com/latest/rss/main"),
+    "美联社": ("apnews.com", ""),
+    "凤凰卫视": ("v.ifeng.com", ""),
+    "新华网": ("news.cn", ""),
+    "人民日报": ("paper.people.com.cn", ""),
+    "美国广播公司": ("abcnews.go.com", "https://abcnews.go.com/abcnews/topstories"),
+    "福克斯新闻": ("foxnews.com", "https://feeds.foxnews.com/foxnews/latest"),
 }
-
-
+BJ = timezone(timedelta(hours=8))
 def read(url):
-    request = urllib.request.Request(url, headers={"User-Agent": "GlobalNewsMonitor/1.0"})
-    with urllib.request.urlopen(request, timeout=8) as response:
-        return response.read(3000000)
+    req = urllib.request.Request(url, headers={"User-Agent":"GlobalNewsMonitor/1.0"})
+    with urllib.request.urlopen(req,timeout=12) as response:
+        return response.read(4000000)
 
+def chinese(text):
+    if not text or re.search("[一-鿿]", text):return text
+    args=urlencode(dict(client="gtx",sl="auto",tl="zh-CN",dt="t",q=text))
+    rows=json.loads(read("https://translate.googleapis.com/translate_a/single?"+args))[0]
+    return "".join(row[0] for row in rows if row[0])
 
-def entries(site, url):
-    raw = read(url)
-    if site == "澎湃新闻":
-        for row in json.loads(raw)["data"]["hotNews"]:
-            when = datetime.fromtimestamp(row["pubTimeLong"]/1000, timezone.utc)
-            yield row["name"], "https://www.thepaper.cn/newsDetail_forward_"+row["contId"], row.get("pic",""), when.isoformat()
-    else:
-        page = BeautifulSoup(raw, "html.parser")
-        selector = "#zxrb + .rdph-list a" if site == "中国新闻网" else "#d-1 a"
-        for link in page.select(selector):
-            yield link.get("title") or link.get_text(strip=True), urljoin(url,link["href"]), "", None
+def fetch(pair):
+    name,(domain,feed)=pair
+    cn=name in ("凤凰卫视","新华网","人民日报")
+    index="https://news.google.com/rss/search?"+urlencode(dict(q="site:"+domain+" when:7d",hl="zh-CN" if cn else "en-US",gl="CN" if cn else "US",ceid="CN:zh-Hans" if cn else "US:en"))
+    for url in filter(None,(feed,index)):
+        try:
+            rows=feedparser.parse(read(url)).entries
+            result=[]
+            for row in rows:
+                indexed=url==index
+                host=urlsplit(row.get("source",{}).get("href","") if indexed else row.link).hostname or ""
+                if not (host==domain or host.endswith("."+domain) or domain.endswith("."+host) or (domain=="bbc.com" and host.endswith(".bbc.co.uk"))):continue
+                stamp=row.get("published_parsed")
+                if not stamp:continue
+                title=row.title.rsplit(" - ",1)[0] if indexed else row.title
+                summary="" if indexed else BeautifulSoup(row.get("summary",""),"html.parser").get_text(" ",strip=True)[:300]
+                media=row.get("media_thumbnail") or row.get("media_content") or []
+                result.append((title,row.link,summary,media[0].get("url","") if media else "",datetime.fromtimestamp(calendar.timegm(stamp),BJ).isoformat()))
+            if result:return result
+        except (OSError,ValueError):continue
+    return []
 
-
-def normalized(title):
-    return re.sub(r"[^一-鿿a-z0-9]", "", title.lower())
-
-
-def duplicate(title, seen):
+def duplicate(key,seen):
     for other in seen:
-        match = SequenceMatcher(None,title,other,autojunk=False)
-        if title == other or match.ratio() >= .70 or (match.find_longest_match().size >= 10 and match.ratio() >= .45):
-            return True
+        m=SequenceMatcher(None,key,other,autojunk=False)
+        if key==other or m.ratio()>=.65 or (m.find_longest_match().size>=9 and m.ratio()>=.42):return True
     return False
 
-
 def collect(relevant):
-    items, errors, seen, urls = [], [], [], set()
-    for site, url in BOARDS.items():
-        try:
-            candidates=list(entries(site,url))
-            if not candidates: raise ValueError("榜单为空")
-        except Exception as exc:
-            errors.append({"source":site,"error":str(exc)})
-            continue
+    seen=set();urls=set();items=[];errors=[]
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        boards=list(pool.map(fetch,SITES.items()))
+    for name,rows in zip(SITES,boards):
         count=0
-        for title, link, image, published in candidates:
-            key=normalized(title)
-            if not key or not re.search("[一-鿿]", title) or not link.startswith(("https://","http://")):continue
-            if not relevant(title) or link in urls or duplicate(key,seen):continue
-            body=summary=""
-            try:
-                page=BeautifulSoup(read(link),"html.parser")
-                article=page.select_one("#paragraph, .left_zw, [class*=index_cententWrap]")
-                if article:
-                    body="\n".join(p.get_text(strip=True) for p in article.select("p") if p.get_text(strip=True))
-                    photo=article.select_one("img[src]")
-                    if photo and not image:image=urljoin(link,photo["src"])
-                meta=page.select_one('meta[name="description"]')
-                if meta and site=="IT之家":summary=meta.get("content","")
-                stamp=page.select_one("#pubtime,.content_left_time,meta[name=pubdate]")
-                if stamp and not published:
-                    nums=re.search(r"(20\d\d)\D+(\d{1,2})\D+(\d{1,2})\D+(\d{1,2}):(\d\d)",stamp.get("content") or stamp.get_text(" ",strip=True))
-                    if nums:published=datetime(*map(int,nums.groups()),tzinfo=timezone(timedelta(hours=8))).astimezone(timezone.utc).isoformat()
-            except (OSError, ValueError):
-                pass
-            short=bool(body and len(body)<=300)
-            text=body if short else summary or body
-            category="AI与科技" if site=="IT之家" else "社会与突发"
-            if re.search("会谈|外交|总统|俄乌|领导人|纪念大会|APEC",title):category="国际政治"
-            elif re.search("银行|利率|经济|金融|股市|财报",title):category="全球经济金融"
-            items.append(dict(title=title,url=link,source_name=site,category=category,image_url=image,reading_text=text if len(text)<=300 else text[:280]+"…",short_body=short,summary="",published_at=published,collected_at=datetime.now(timezone.utc).isoformat(),verification_status="待核实",fingerprint=hashlib.sha256(link.encode()).hexdigest()))
-            urls.add(link);seen.append(key);count+=1
-            if count==10:break
+        for title,link,summary,image,stamp in rows[:35]:
+            if link in urls:continue
+            try:title=chinese(title)
+            except (OSError,ValueError):continue
+            key=re.sub(r"[^一-鿿a-z0-9]","",title.lower())
+            if not key or not relevant(title) or duplicate(key,seen):continue
+            try:summary=chinese(summary)
+            except (OSError,ValueError):summary=""
+            cat="社会与突发"
+            for pattern,category in [("外交|总统|议会|大选|军队|战争|会谈|部长","国际政治"),("利率|股市|经济|财报|银行","全球经济金融"),("芯片|科技|人工智能|机器人|航天","AI与科技")]:
+                if re.search(pattern,title):cat=category;break
+            items.append(dict(title=title,url=link,source_name=name,category=cat,image_url=image,reading_text=summary,short_body=False,summary=summary,published_at=stamp,collected_at=datetime.now(BJ).isoformat(),verification_status="待核实",fingerprint=hashlib.sha256(link.encode()).hexdigest()))
+            seen.add(key);urls.add(link);count+=1
+            if count==5:break
+        if count<5:errors.append(dict(source=name,error=f"本轮取得 {count} 条可展示新闻"))
     return items,errors
