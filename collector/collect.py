@@ -24,7 +24,15 @@ def fetch(source):
    summary=chinese_text(e.get("summary",""))[:4000]
    if summary == title or "news.google.com" in source["url"]:
     summary=""  # 聚合源的描述是重复标题和媒体链接。
-   items.append({"source_name":source["name"],"category":source["category"],"title":title,"url":link,"summary":summary,"published_at":published,"fingerprint":hashlib.sha256(link.encode()).hexdigest(),"verification_status":"待核实","collected_at":datetime.now(timezone.utc).isoformat()})
+   body=next((chinese_text(c.value) for c in e.get("content",[]) if c.get("type") in ("text/html","text/plain")), "")
+   images=[m.get("url","") for m in e.get("media_thumbnail",[])]
+   images.extend(m.get("href","") for m in e.enclosures if m.get("type","").startswith("image/"))
+   images.extend(m.get("url","") for m in e.get("media_content",[]) if m.get("medium")=="image" or m.get("type","").startswith("image/"))
+   picture=next((v for v in images if article_url(v) and v.startswith("https://")), "")
+   short=bool(body and len(body)<=300)
+   preview=body if short else summary or body
+   if len(preview)>300:preview=preview[:280].rstrip()+"…"
+   items.append({"image_url":picture,"reading_text":preview,"short_body":short,"source_name":source["name"],"category":source["category"],"title":title,"url":link,"summary":summary,"published_at":published,"fingerprint":hashlib.sha256(link.encode()).hexdigest(),"verification_status":"待核实","collected_at":datetime.now(timezone.utc).isoformat()})
   return items,None
  except Exception as exc:return [],f"{type(exc).__name__}: {exc}"
 def main():
