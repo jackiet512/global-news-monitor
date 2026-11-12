@@ -1,17 +1,13 @@
 name: Collect global news
-
 on:
   schedule:
     - cron: "7,37 * * * *"
   workflow_dispatch:
-
 permissions:
   contents: read
-
 concurrency:
   group: global-news-collector
   cancel-in-progress: false
-
 jobs:
   collect:
     runs-on: ubuntu-latest
@@ -24,9 +20,13 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Collect RSS candidates
+      - name: Collect and optionally ingest
+        env:
+          NEWS_INGEST_URL: ${{ secrets.NEWS_INGEST_URL }}
+          NEWS_INGEST_TOKEN: ${{ secrets.NEWS_INGEST_TOKEN }}
         run: python collector/collect.py
       - name: Upload collection artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: news-run-${{ github.run_id }}
