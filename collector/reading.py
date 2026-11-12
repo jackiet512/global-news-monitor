@@ -1,7 +1,8 @@
 """为已经入选的新闻补充来自发布方的正文段落。"""
+import json
 import re
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 from googlenewsdecoder import gnewsdecoder
@@ -46,16 +47,43 @@ def enrich(items, sites, read, translate):
                 allowed.add("abcnews.go.com")
             if not any(host==domain or host.endswith("."+domain) for domain in allowed):
                 return
-            html = read(link)
-            body = extract(html, include_comments=False, include_tables=False, favor_precision=True) or ""
-            text, complete = preview(body, translate)
-            if text and (complete or len(text)>len(item["reading_text"])):
-                item["reading_text"]=text
-                item["short_body"]=complete
-            image = BeautifulSoup(html,"html.parser").select_one('meta[property="og:image"]')
-            if not item["image_url"] and image and image.get("content","").startswith("https://"):
-                item["image_url"]=image["content"]
+            if not urlsplit(link).path.strip("/"):
+                return
             item["url"]=link
+            html=read(link)
+            page=BeautifulSoup(html,"html.parser")
+            container=page.select_one("#detail") if item["source_name"]=="新华网" else page.select_one("#ozoom, #articleContent, .article-box .article") if item["source_name"]=="人民日报" else None
+            image=page.select_one('meta[property="og:image"],meta[itemprop="thumbnailUrl"]')
+            picture=image.get("content","") if image else ""
+            if not picture and container:
+                image=container.select_one("img[src]")
+                picture=image.get("src","") if image else ""
+            if picture and not item["image_url"]:
+                url=urljoin(link,picture)
+                if url.startswith("https://"):item["image_url"]=url
+            candidates=[]
+            if container:
+                candidates.append("\n".join(p.get_text(strip=True) for p in container.select("p")))
+            for script in page.select('script[type="application/ld+json"]'):
+                try:data=json.loads(script.get_text())
+                except ValueError:continue
+                nodes=data if isinstance(data,list) else [data]
+                for node in nodes:
+                    if not isinstance(node,dict):continue
+                    nodes.extend(node.get("@graph",[]) if isinstance(node.get("@graph"),list) else [])
+                    if isinstance(node.get("articleBody"),str):
+                        candidates.append(BeautifulSoup(node["articleBody"],"html.parser").get_text(" ",strip=True))
+            candidates.append(extract(html,include_comments=False,include_tables=False,favor_precision=True) or "")
+            body=max(candidates,key=len)
+            lines=[line for line in body.splitlines() if not re.match(r"^(?:责编[：:]|责任编辑[：:]|正在播放$|来自香港$|• 来源|ABC News Live is)",line.strip(),re.I)]
+            body="\n".join(lines).strip()
+            meta=page.select_one('meta[property="og:description"],meta[name="description"]')
+            description=meta.get("content","").strip() if meta else ""
+            if len(body)<100 and len(description)>len(body):body=description
+            text,complete=preview(body,translate)
+            if text and text.strip()!=item["title"] and (complete or len(text)>len(item["reading_text"])):
+                item["reading_text"]=text
+                item["short_body"]=complete and bool(container or any(n.strip() for n in candidates[:-1])) and body!=description
         except Exception as exc:
             print("原文补充失败",item["source_name"],type(exc).__name__)
     with ThreadPoolExecutor(max_workers=6) as pool:

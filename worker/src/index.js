@@ -73,7 +73,7 @@ async function load(){
    const image=x.image_url && x.image_url.startsWith('https://')?'<img class="photo" loading="lazy" referrerpolicy="no-referrer" alt="报道配图" src="'+esc(x.image_url)+'" onerror="this.hidden=true">':'';
    const text=x.reading_text||x.summary||'';
    const link=safe?'<a class="more" target="_blank" rel="noopener noreferrer" href="'+esc(x.url)+'">'+(text && !x.short_body?'更多 · 阅读原文':'查看原文')+' ↗</a>':'';
-   return '<article class="item"><header><span class="tag">'+esc(x.category==='AI与科技'?'人工智能与科技':x.category)+'</span><time>'+date(x.published_at||x.collected_at)+'</time></header><h2>'+title+'</h2>'+image+(text?'<p class="summary">'+esc(text)+'</p>':'')+'<footer><span>'+esc(x.source_name)+' · 待核实</span>'+link+'</footer></article>';
+   return '<article class="item"><header><span class="tag">'+esc(x.category==='AI与科技'?'人工智能与科技':x.category)+'</span><time>'+date(x.published_at||x.collected_at)+'</time></header><h2>'+title+'</h2>'+image+(text?'<p class="summary">'+esc(text)+'</p>':'<p class="muted">暂未取得原文内容，可打开来源网站查看。</p>')+'<footer><span>'+esc(x.source_name)+' · 待核实</span>'+link+'</footer></article>';
   }).join('')||'<div class="empty">暂无记录，等待下一轮采集。</div>';
  }catch{if(id===sequence){status.textContent='读取失败';box.innerHTML='<div class="empty">暂时无法读取数据，请稍后刷新。</div>'}}
 }
