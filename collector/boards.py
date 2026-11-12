@@ -21,7 +21,7 @@ SITES = {
     "凤凰卫视": ("v.ifeng.com", ""),
     "新华网": ("news.cn", ""),
     "人民日报": ("paper.people.com.cn", ""),
-    "美国广播公司": ("abcnews.go.com", "https://abcnews.go.com/abcnews/topstories"),
+    "美国广播公司": ("abcnews.com", "https://abcnews.go.com/abcnews/topstories"),
     "福克斯新闻": ("foxnews.com", "https://feeds.foxnews.com/foxnews/latest"),
 }
 BJ = timezone(timedelta(hours=8))
@@ -39,7 +39,7 @@ def chinese(text):
 def fetch(pair):
     name,(domain,feed)=pair
     cn=name in ("凤凰卫视","新华网","人民日报")
-    index="https://news.google.com/rss/search?"+urlencode(dict(q="site:"+domain+" when:7d",hl="zh-CN" if cn else "en-US",gl="CN" if cn else "US",ceid="CN:zh-Hans" if cn else "US:en"))
+    index="https://news.google.com/rss/search?"+urlencode(dict(q="site:"+domain+(" 凤凰卫视" if name=="凤凰卫视" else "")+" when:7d",hl="zh-CN" if cn else "en-US",gl="CN" if cn else "US",ceid="CN:zh-Hans" if cn else "US:en"))
     for url in filter(None,(feed,index)):
         try:
             rows=feedparser.parse(read(url)).entries
@@ -64,11 +64,29 @@ def duplicate(key,seen):
         if key==other or m.ratio()>=.65 or (m.find_longest_match().size>=9 and m.ratio()>=.42):return True
     return False
 
+def terms(title):
+    words=set(re.findall(r"[a-z]{3,}",title.lower()))-set("the and for with from after says over into that this news live video what about amid their than have was how who more has new his her are its".split())
+    for segment in re.findall(r"[一-鿿]+",title):
+        words.update(segment[i:i+2] for i in range(len(segment)-1))
+    return words
+
+def coverage(tokens, other_sites):
+    score=0
+    for site in other_sites:
+        best=max((len(tokens & other)/max(len(tokens | other),1) for other in site if len(tokens & other)>=2),default=0)
+        if best>=.13:score+=best
+    return score
+
 def collect(relevant):
     seen=set();urls=set();items=[];errors=[]
     with ThreadPoolExecutor(max_workers=10) as pool:
         boards=list(pool.map(fetch,SITES.items()))
-    for name,rows in zip(SITES,boards):
+    signatures=[[terms(row[0]) for row in board] for board in boards]
+    for i,(name,rows) in enumerate(zip(SITES,boards)):
+        # 同一话题被多个媒体关注时提高优先级，同分沿用来源顺序。
+        others=signatures[:i]+signatures[i+1:]
+        ranked=sorted(enumerate(rows),key=lambda pair:coverage(signatures[i][pair[0]],others),reverse=True)
+        rows=[row for _,row in ranked]
         count=0
         for title,link,summary,image,stamp in rows[:35]:
             if link in urls:continue
