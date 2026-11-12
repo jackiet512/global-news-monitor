@@ -35,7 +35,7 @@ def main():
  OUT.parent.mkdir(parents=True,exist_ok=True);OUT.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8")
  endpoint=os.getenv("NEWS_INGEST_URL");token=os.getenv("NEWS_INGEST_TOKEN")
  if endpoint and token:
-  data=json.dumps(report,ensure_ascii=False).encode();req=urllib.request.Request(endpoint,data=data,headers={"Content-Type":"application/json","Authorization":"Bearer "+token},method="POST")
+  data=json.dumps(report,ensure_ascii=False).encode();req=urllib.request.Request(endpoint,data=data,headers={"User-Agent":"GlobalNewsMonitor/1.0","Content-Type":"application/json","Authorization":"Bearer "+token},method="POST")
   with urllib.request.urlopen(req,timeout=25) as response:print("D1 ingest:",response.read().decode()[:1000])
  else:print("D1 ingestion skipped: missing NEWS_INGEST_URL / NEWS_INGEST_TOKEN; artifact only.")
  return 0
