@@ -3,6 +3,8 @@ import hashlib,json,os,sys,time,urllib.request
 from datetime import datetime,timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin, urlsplit
 import feedparser
 from display_text import article_url, chinese_text
 ROOT=Path(__file__).resolve().parents[1]
@@ -28,6 +30,20 @@ def fetch(source):
    images=[m.get("url","") for m in e.get("media_thumbnail",[])]
    images.extend(m.get("href","") for m in e.enclosures if m.get("type","").startswith("image/"))
    images.extend(m.get("url","") for m in e.get("media_content",[]) if m.get("medium")=="image" or m.get("type","").startswith("image/"))
+   markup=BeautifulSoup(e.get("summary",""),"html.parser")
+   photo=markup.find("img",src=True)
+   if photo:images.append(urljoin(link,photo["src"]))
+   if urlsplit(link).hostname=="www.chinanews.com.cn":
+    try:
+     with urllib.request.urlopen(link,timeout=3) as response:
+      article=BeautifulSoup(response.read(1200000),"html.parser").select_one(".left_zw")
+     if article:
+      paragraphs=[p.get_text(strip=True) for p in article.select("p") if not p.find("img")]
+      body="\n".join(p for p in paragraphs if p.strip() and not p.startswith("【编辑"))
+      photo=article.find("img",src=True)
+      if photo:images.insert(0,urljoin(link,photo["src"]))
+    except (OSError, ValueError):
+     pass
    picture=next((v for v in images if article_url(v) and v.startswith("https://")), "")
    short=bool(body and len(body)<=300)
    preview=body if short else summary or body

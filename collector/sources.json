@@ -48,6 +48,27 @@
       "category": "社会与突发",
       "language": "zh-CN",
       "enabled": true
+    },
+    {
+      "name": "IT之家",
+      "url": "https://www.ithome.com/rss/",
+      "category": "AI与科技",
+      "language": "zh-CN",
+      "enabled": true
+    },
+    {
+      "name": "中国新闻网·财经",
+      "url": "https://www.chinanews.com.cn/rss/finance.xml",
+      "category": "全球经济金融",
+      "language": "zh-CN",
+      "enabled": true
+    },
+    {
+      "name": "中国新闻网·社会",
+      "url": "https://www.chinanews.com.cn/rss/society.xml",
+      "category": "社会与突发",
+      "language": "zh-CN",
+      "enabled": true
     }
   ]
 }
