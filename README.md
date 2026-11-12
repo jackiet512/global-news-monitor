@@ -1,38 +1,14 @@
-# Global News Monitor
+# 全球新闻中心
 
-Cloud-hosted, public, Chinese-language global news monitoring. V1 is designed around GitHub Actions (30-minute collection), Cloudflare D1 (history), and Cloudflare Workers (public web/API).
+网站从中文新闻订阅源收录国际政治、人工智能与科技、全球经济金融、社会与突发事件。点击标题可查看来源，采集记录列出候选数、新增数和来源错误数。收录条目仍待核实。
 
-## Status
+采集程序每小时第 7 和第 37 分钟计划运行，实际启动时间由 GitHub 调度。程序按链接去重，保留来源提供的中文摘要；聚合源只有重复标题时省略摘要。历史外文条目保留在数据库中。
 
-Initial repository scaffold. **Not yet deployed and not yet operational.** RSS source reliability, event-level deduplication, source verification, Chinese summaries, alerting, and production UI must pass tests before calling V1 complete.
+## 部署与检查
 
-## Architecture
+采集配置位于 `collector/sources.json`，数据库结构位于 `migrations/`，网站和接口位于 `worker/`。部署步骤见 [部署说明](docs/CLOUDFLARE_SETUP.md)。
 
-- `collector/`: Python RSS ingestion and normalization; runs in GitHub Actions.
-- `migrations/`: Cloudflare D1 schema.
-- `worker/`: public read-only news center and API.
-- `.github/workflows/`: scheduled collection workflow.
-
-## Local collector check
-
-```bash
+```sh
 python -m pip install -r requirements.txt
 python -m unittest discover -s tests -v
 ```
-
-The collector requires `NEWS_DATABASE_URL` only when using a remote persistence adapter. The initial workflow intentionally does not pretend to persist data until D1 ingestion credentials and an authenticated ingestion endpoint are configured.
-
-## Cloudflare deployment (pending)
-
-1. Create a D1 database named `global-news-db`.
-2. Apply `migrations/0001_init.sql`.
-3. Create a Worker from `worker/`, bind D1 as `DB`, and deploy.
-4. Configure GitHub repository secrets for the ingestion endpoint/token and Cloudflare deployment as documented in the deployment guide (to be added after the first live smoke test).
-
-## Operating guarantees to validate
-
-- A report is created every scheduled run, including an explicit "本轮无重大新增" report.
-- Candidate RSS items are not described as verified major news.
-- Duplicate items are suppressed by canonical URL/hash.
-- Run errors and source-level failures are visible.
-- The schedule is best-effort; GitHub Actions can start late.

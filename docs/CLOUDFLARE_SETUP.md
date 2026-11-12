@@ -1,17 +1,15 @@
-# Cloudflare deployment
+# 部署说明
 
-1. Cloudflare Dashboard → Workers & Pages → D1 SQL Database → Create database. Name it `global-news-db`, then copy its database ID.
-2. Replace the placeholder database_id in `worker/wrangler.toml`.
-3. From the repository root:
-   ```bash
-   cd worker
-   npm install
-   npx wrangler d1 execute global-news-db --remote --file=../migrations/0001_init.sql
-   npx wrangler secret put INGEST_TOKEN
-   npm run deploy
-   ```
-4. Generate a long random token locally. Enter it for the Worker secret and also add GitHub repository secrets:
-   - `NEWS_INGEST_TOKEN`: same random token
-   - `NEWS_INGEST_URL`: `https://YOUR-WORKER-DOMAIN/api/ingest`
+在 Cloudflare 创建 D1 数据库，将数据库标识填入 `worker/wrangler.toml`，绑定名称为 `DB`。在仓库目录执行：
 
-Never commit tokens. Check `/api/health`, then run the GitHub Actions workflow manually. D1 persistence only works after deployment and both GitHub secrets are configured. GitHub scheduled starts are best-effort and may be delayed.
+```sh
+cd worker
+npm install
+npx wrangler d1 execute global-news-db --remote --file=../migrations/0001_init.sql
+npm run deploy
+npx wrangler secret put INGEST_TOKEN
+```
+
+在 GitHub 仓库的 Actions 密钥设置中保存写入接口地址 `NEWS_INGEST_URL` 和令牌 `NEWS_INGEST_TOKEN`。令牌须与生产环境的 `INGEST_TOKEN` 相同。仅在密钥输入界面填写令牌。
+
+手动运行采集工作流，查看写入结果，并通过 `/api/news` 和 `/api/reports` 核对新闻和报告。

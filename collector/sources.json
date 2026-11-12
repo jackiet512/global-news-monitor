@@ -1,10 +1,53 @@
 {
   "sources": [
-    {"name":"BBC World","url":"https://feeds.bbci.co.uk/news/world/rss.xml","category":"国际政治","language":"en","enabled":true},
-    {"name":"BBC Technology","url":"https://feeds.bbci.co.uk/news/technology/rss.xml","category":"AI与科技","language":"en","enabled":true},
-    {"name":"Google News: OpenAI","url":"https://news.google.com/rss/search?q=OpenAI+when:7d&hl=en-US&gl=US&ceid=US:en","category":"AI与科技","language":"en","enabled":true},
-    {"name":"Google News: Anthropic","url":"https://news.google.com/rss/search?q=Anthropic+OR+Claude+when:7d&hl=en-US&gl=US&ceid=US:en","category":"AI与科技","language":"en","enabled":true},
-    {"name":"Google News: NVIDIA","url":"https://news.google.com/rss/search?q=NVIDIA+OR+Jensen+Huang+when:7d&hl=en-US&gl=US&ceid=US:en","category":"AI与科技","language":"en","enabled":true},
-    {"name":"Google News: Global economy","url":"https://news.google.com/rss/search?q=global+economy+OR+central+bank+OR+markets+when:7d&hl=en-US&gl=US&ceid=US:en","category":"全球经济金融","language":"en","enabled":true}
+    {
+      "name": "联合国新闻",
+      "url": "https://news.un.org/feed/subscribe/zh/news/all/rss.xml",
+      "category": "国际政治",
+      "language": "zh-CN",
+      "enabled": true
+    },
+    {
+      "name": "谷歌新闻·国际时政",
+      "url": "https://news.google.com/rss/search?q=%E5%A4%96%E4%BA%A4+OR+%E5%9B%BD%E9%99%85%E6%94%BF%E6%B2%BB+when%3A7d&hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans",
+      "category": "国际政治",
+      "language": "zh-CN",
+      "enabled": true
+    },
+    {
+      "name": "谷歌新闻·人工智能研究",
+      "url": "https://news.google.com/rss/search?q=OpenAI+OR+%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD+when%3A7d&hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans",
+      "category": "AI与科技",
+      "language": "zh-CN",
+      "enabled": true
+    },
+    {
+      "name": "谷歌新闻·人工智能应用",
+      "url": "https://news.google.com/rss/search?q=Anthropic+OR+Claude+when%3A7d&hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans",
+      "category": "AI与科技",
+      "language": "zh-CN",
+      "enabled": true
+    },
+    {
+      "name": "谷歌新闻·半导体产业",
+      "url": "https://news.google.com/rss/search?q=%E8%8B%B1%E4%BC%9F%E8%BE%BE+OR+%E9%BB%84%E4%BB%81%E5%8B%8B+when%3A7d&hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans",
+      "category": "AI与科技",
+      "language": "zh-CN",
+      "enabled": true
+    },
+    {
+      "name": "谷歌新闻·全球财经",
+      "url": "https://news.google.com/rss/search?q=%E5%85%A8%E7%90%83%E7%BB%8F%E6%B5%8E+OR+%E5%A4%AE%E8%A1%8C+OR+%E5%9B%BD%E9%99%85%E9%87%91%E8%9E%8D+when%3A7d&hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans",
+      "category": "全球经济金融",
+      "language": "zh-CN",
+      "enabled": true
+    },
+    {
+      "name": "谷歌新闻·社会与突发事件",
+      "url": "https://news.google.com/rss/search?q=%E5%9C%B0%E9%9C%87+OR+%E6%B4%AA%E7%81%BE+OR+%E7%AA%81%E5%8F%91%E4%BA%8B%E4%BB%B6+when%3A7d&hl=zh-CN&gl=CN&ceid=CN%3Azh-Hans",
+      "category": "社会与突发",
+      "language": "zh-CN",
+      "enabled": true
+    }
   ]
 }
