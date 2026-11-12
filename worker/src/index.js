@@ -28,6 +28,9 @@ export default {
    }
    for(const e of b.source_errors||[]) statements.push(db.prepare("INSERT INTO source_runs (run_at,source_name,status,item_count,error) VALUES (?,?,?,?,?)").bind(b.run_at,e.source,"error",0,e.error));
    statements.push(db.prepare("UPDATE reports SET summary=CASE WHEN new_count>0 THEN '本轮新增 '||new_count||' 条新闻，待核实。' ELSE '本轮未收录新条目。' END WHERE id=(SELECT MAX(id) FROM reports) RETURNING new_count"));
+   if(b.ranked && b.items.length){
+    statements.splice(statements.length-1,0,db.prepare("CREATE TABLE IF NOT EXISTS current_board (id INTEGER PRIMARY KEY,payload TEXT NOT NULL)"),db.prepare("INSERT OR REPLACE INTO current_board VALUES(1,?)").bind(JSON.stringify(b.items)));
+   }
    const results=await db.batch(statements);
    const inserted=results.at(-1).results[0].new_count;
    return json({ok:true,inserted,reported:true});
@@ -36,16 +39,9 @@ export default {
    if(!env.DB)return json({error:"database_not_configured"},503);
    if(url.pathname==="/api/reports"){const r=await env.DB.prepare("SELECT * FROM reports ORDER BY run_at DESC LIMIT 100").all();return json({items:r.results||[]})}
    const n=Math.min(Math.max((parseInt(url.searchParams.get("limit"),10)||50),1),100),c=url.searchParams.get("category");
-   const protectedTitles=editorial.keep.map(()=>"instr(title,?)>0").join(" OR ");
-   const excludedTitles=editorial.exclude.map(group=>"("+group.map(()=>"instr(title,?)>0").join(" AND ")+")").join(" OR ");
-   const filters=[...editorial.keep,...editorial.exclude.flat()];
-   const q=env.DB.prepare("SELECT * FROM news_items WHERE title GLOB '*[一-鿿]*' AND (("+protectedTitles+") OR NOT ("+excludedTitles+"))"+(c?" AND category=?":"")+" ORDER BY COALESCE(published_at,collected_at) DESC,id DESC LIMIT ?").bind(...filters,...(c?[c]:[]),n);
-   const r=await q.all(),items=r.results||[];
-   if(items.length && await env.DB.prepare("SELECT name FROM sqlite_master WHERE name='news_reading'").first()){
-    const m=await env.DB.prepare("SELECT * FROM news_reading WHERE fingerprint IN ("+items.map(()=>"?").join(",")+")").bind(...items.map(x=>x.fingerprint)).all();
-    const byId=new Map(m.results.map(x=>[x.fingerprint,x]));
-    for(const item of items)Object.assign(item,byId.get(item.fingerprint));
-   }
+   if(!await env.DB.prepare("SELECT name FROM sqlite_master WHERE name='current_board'").first())return json({items:[]});
+   const board=await env.DB.prepare("SELECT payload FROM current_board WHERE id=1").first();
+   const items=JSON.parse(board?.payload||"[]").filter(x=>!c||x.category===c).sort((a,b)=>Date.parse(b.published_at||b.collected_at)-Date.parse(a.published_at||a.collected_at)).slice(0,n);
    return json({items});
   }
   if(url.pathname==="/")return new Response(PAGE,{headers:{"content-type":"text/html; charset=utf-8"}});
@@ -57,7 +53,7 @@ function json(v,s=200){return new Response(JSON.stringify(v),{status:s,headers:{
 const PAGE = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>全球新闻中心</title><style>
 body{margin:0;background:#f3f5f9;color:#172033;font:16px system-ui,"PingFang SC",sans-serif}.wrap{max-width:1000px;margin:auto;padding:24px 16px}h1{margin:0;font-size:26px}.muted,.meta{color:#64748b;font-size:13px}.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:20px 0}.tabs button{border:1px solid #d6deea;background:white;border-radius:18px;padding:8px 13px}.tabs .active{background:#234bb5;color:white}.item,.report,.empty{background:white;border:1px solid #e2e8f0;border-radius:12px;padding:16px;margin:10px 0}.item h2{font-size:18px;line-height:1.45;margin:8px 0}.item a{color:inherit;text-decoration:none}.item a:hover{text-decoration:underline}.summary{line-height:1.65;color:#334155;white-space:pre-wrap}.tag{background:#eef2ff;color:#3730a3;padding:3px 7px;border-radius:5px;font-size:12px}.empty{text-align:center;padding:40px;color:#64748b}@media(prefers-color-scheme:dark){body{background:#101827;color:#e5e7eb}.item,.report,.empty,.tabs button{background:#182235;color:#e5e7eb;border-color:#334155}.summary{color:#cbd5e1}.muted,.meta{color:#9ca3af}}
 :root{color-scheme:light}body{margin:0;background:#f7f6f2;color:#182c30;font-family:"PingFang SC","Microsoft YaHei",sans-serif}.wrap{max-width:760px;padding:36px 18px}.wrap>h1{font:700 clamp(32px,6vw,52px)/1.2 "Songti SC",serif;color:#183d3d}.tabs{position:sticky;top:0;z-index:2;background:#f7f6f2;overflow-x:auto;flex-wrap:nowrap;padding:12px 0;border-bottom:1px solid #bfcac5}.tabs button{flex:none;cursor:pointer;background:white;color:#294843;min-height:42px}.tabs .active{background:#19534b;color:white}.item,.report,.empty{background:white;color:#193139;padding:clamp(16px,4vw,32px);border-radius:12px}.item header,.item footer{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.item h2{font:700 clamp(19px,3vw,25px)/1.5 "Songti SC",serif;margin:14px 0}.item time,.item footer,.muted,.meta{color:#536a69;font-size:13px}.tag{background:#e2f0eb;color:#19534b}.summary{font-size:17px;line-height:1.85;color:#283d40}.photo{width:100%;max-height:410px;object-fit:contain;background:#f2f4f1;border-radius:6px}.item .more{display:inline-block;padding:10px 0;color:#18574f;font-weight:650}.item footer{border-top:1px solid #e2e8e5;margin-top:12px}.tabs button:focus-visible,a:focus-visible{outline:3px solid #a15d16}
-</style><main class="wrap"><h1>全球新闻中心</h1><p class="muted">每半小时采集 · 按新闻时间倒序</p><div id="status" class="muted">正在连接…</div><nav class="tabs"><button class="active" data-cat="">全部</button><button data-cat="国际政治">国际政治</button><button data-cat="AI与科技">人工智能与科技</button><button data-cat="全球经济金融">全球经济金融</button><button data-cat="社会与突发">社会与突发</button><button data-cat="reports">采集记录</button></nav><section id="content"><div class="empty">加载中…</div></section></main><script>
+</style><main class="wrap"><h1>全球新闻中心</h1><p class="muted">各站热榜 · 每站最多十条 · 按时间倒序</p><div id="status" class="muted">正在连接…</div><nav class="tabs"><button class="active" data-cat="">全部</button><button data-cat="国际政治">国际政治</button><button data-cat="AI与科技">人工智能与科技</button><button data-cat="全球经济金融">全球经济金融</button><button data-cat="社会与突发">社会与突发</button><button data-cat="reports">采集记录</button></nav><section id="content"><div class="empty">加载中…</div></section></main><script>
 const box=document.querySelector('#content'),status=document.querySelector('#status');let cat='';
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 let sequence=0;
