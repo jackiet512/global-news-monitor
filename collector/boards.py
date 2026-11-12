@@ -58,6 +58,7 @@ def collect(relevant):
         count=0
         for title, link, image, published in candidates:
             key=normalized(title)
+            if not key or not re.search("[一-鿿]", title) or not link.startswith(("https://","http://")):continue
             if not relevant(title) or link in urls or duplicate(key,seen):continue
             body=summary=""
             try:
