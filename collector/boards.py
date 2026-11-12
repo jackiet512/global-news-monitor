@@ -10,7 +10,7 @@ from difflib import SequenceMatcher
 from urllib.parse import urlencode, urlsplit
 
 from reading import enrich
-from events import signals, same_event
+from events import signals, same_event, incident_clues, matching_incident
 from programme import channel, schedule
 import feedparser
 from bs4 import BeautifulSoup
@@ -85,6 +85,7 @@ def collect(relevant):
     with ThreadPoolExecutor(max_workers=10) as pool:
         boards=list(pool.map(fetch,SITES.items()))
     events=[]
+    selected_clues=[]
     signatures=[[terms(row[0]) for row in board] for board in boards]
     for i in sorted(range(len(boards)),key=lambda i:not bool(list(SITES.values())[i][1])):
         name=list(SITES)[i]
@@ -108,7 +109,11 @@ def collect(relevant):
             cat="社会与突发"
             for pattern,category in [("外交|总统|议会|大选|军队|战争|会谈|部长","国际政治"),("利率|股市|经济|财报|银行","全球经济金融"),("芯片|科技|人工智能|机器人|航天","AI与科技")]:
                 if re.search(pattern,title):cat=category;break
-            items.append(dict(title=title,url=link,source_name=name,category=cat,image_url=image,reading_text=summary,short_body=False,summary=summary,published_at=stamp,collected_at=datetime.now(BJ).isoformat(),verification_status="待核实",fingerprint=hashlib.sha256(link.encode()).hexdigest()))
+            item=dict(title=title,url=link,source_name=name,category=cat,image_url=image,reading_text=summary,short_body=False,summary=summary,published_at=stamp,collected_at=datetime.now(BJ).isoformat(),verification_status="待核实",fingerprint=hashlib.sha256(link.encode()).hexdigest())
+            clue=incident_clues(item)
+            if any(matching_incident(clue,old) for old in selected_clues):continue
+            selected_clues.append(clue)
+            items.append(item)
             events.append(event)
             seen.add(key);urls.add(link);count+=1
             if count==5:break
