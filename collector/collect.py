@@ -10,6 +10,13 @@ from display_text import article_url, chinese_text
 ROOT=Path(__file__).resolve().parents[1]
 SOURCES=json.loads((ROOT/"collector"/"sources.json").read_text(encoding="utf-8"))["sources"]
 OUT=Path(os.environ.get("OUTPUT_FILE",ROOT/"collector"/"latest_run.json"))
+EDITORIAL=json.loads((ROOT/"worker/src/editorial.json").read_text(encoding="utf-8"))
+
+def relevant(title):
+ return any(word in title for word in EDITORIAL["keep"]) or not any(
+  all(word in title for word in group) for group in EDITORIAL["exclude"]
+ )
+
 def fetch(source):
  req=urllib.request.Request(source["url"],headers={"User-Agent":"GlobalNewsMonitor/1.0"})
  try:
@@ -19,7 +26,7 @@ def fetch(source):
   items=[]
   for e in parsed.entries[:30]:
    link=e.get("link","").strip();title=chinese_text(e.get("title",""))
-   if not article_url(link) or not title:continue
+   if not article_url(link) or not title or not relevant(title):continue
    published=None
    try:published=parsedate_to_datetime(e.get("published") or e.get("updated")).astimezone(timezone.utc).isoformat()
    except Exception:pass

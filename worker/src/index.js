@@ -1,3 +1,4 @@
+import editorial from "./editorial.json";
 export default {
  async fetch(request,env){
   const url=new URL(request.url);
@@ -35,7 +36,10 @@ export default {
    if(!env.DB)return json({error:"database_not_configured"},503);
    if(url.pathname==="/api/reports"){const r=await env.DB.prepare("SELECT * FROM reports ORDER BY run_at DESC LIMIT 100").all();return json({items:r.results||[]})}
    const n=Math.min(Math.max((parseInt(url.searchParams.get("limit"),10)||50),1),100),c=url.searchParams.get("category");
-   const q=c?env.DB.prepare("SELECT * FROM news_items WHERE title GLOB '*[一-鿿]*' AND category=? ORDER BY COALESCE(published_at,collected_at) DESC,id DESC LIMIT ?").bind(c,n):env.DB.prepare("SELECT * FROM news_items WHERE title GLOB '*[一-鿿]*' ORDER BY COALESCE(published_at,collected_at) DESC,id DESC LIMIT ?").bind(n);
+   const protectedTitles=editorial.keep.map(()=>"instr(title,?)>0").join(" OR ");
+   const excludedTitles=editorial.exclude.map(group=>"("+group.map(()=>"instr(title,?)>0").join(" AND ")+")").join(" OR ");
+   const filters=[...editorial.keep,...editorial.exclude.flat()];
+   const q=env.DB.prepare("SELECT * FROM news_items WHERE title GLOB '*[一-鿿]*' AND (("+protectedTitles+") OR NOT ("+excludedTitles+"))"+(c?" AND category=?":"")+" ORDER BY COALESCE(published_at,collected_at) DESC,id DESC LIMIT ?").bind(...filters,...(c?[c]:[]),n);
    const r=await q.all(),items=r.results||[];
    if(items.length && await env.DB.prepare("SELECT name FROM sqlite_master WHERE name='news_reading'").first()){
     const m=await env.DB.prepare("SELECT * FROM news_reading WHERE fingerprint IN ("+items.map(()=>"?").join(",")+")").bind(...items.map(x=>x.fingerprint)).all();
