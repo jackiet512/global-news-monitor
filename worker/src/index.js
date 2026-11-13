@@ -37,12 +37,17 @@ export default {
   }
   if(url.pathname==="/api/reports"||url.pathname==="/api/news"){
    if(!env.DB)return json({error:"database_not_configured"},503);
-   if(url.pathname==="/api/reports"){const r=await env.DB.prepare("SELECT * FROM reports ORDER BY run_at DESC LIMIT 100").all();return json({items:r.results||[]})}
-   const n=Math.min(Math.max((parseInt(url.searchParams.get("limit"),10)||50),1),100),c=url.searchParams.get("category");
-   if(!await env.DB.prepare("SELECT name FROM sqlite_master WHERE name='current_board'").first())return json({items:[]});
-   const board=await env.DB.prepare("SELECT payload FROM current_board WHERE id=1").first();
-   const items=JSON.parse(board?.payload||"[]").filter(x=>!c||x.category===c).sort((a,b)=>Date.parse(b.published_at||b.collected_at)-Date.parse(a.published_at||a.collected_at)).slice(0,n);
-   return json({items});
+   const selected=url.searchParams.get("date")||beijingDate();
+   if(!validDate(selected))return json({error:"invalid_date"},400);
+   const from=selected+"T00:00:00+08:00",to=nextDate(selected)+"T00:00:00+08:00";
+   if(url.pathname==="/api/reports"){
+    const r=await env.DB.prepare("SELECT * FROM reports WHERE julianday(run_at)>=julianday(?) AND julianday(run_at)<julianday(?) ORDER BY run_at DESC LIMIT 200").bind(from,to).all();
+    return json({date:selected,items:r.results||[]});
+   }
+   const n=Math.min(Math.max((parseInt(url.searchParams.get("limit"),10)||100),1),200),c=url.searchParams.get("category");
+   const sql="SELECT ni.*,nr.image_url,nr.reading_text,nr.short_body FROM news_items ni LEFT JOIN news_reading nr ON nr.fingerprint=ni.fingerprint WHERE julianday(COALESCE(ni.published_at,ni.collected_at))>=julianday(?) AND julianday(COALESCE(ni.published_at,ni.collected_at))<julianday(?)"+(c?" AND ni.category=?":"")+" ORDER BY julianday(COALESCE(ni.published_at,ni.collected_at)) DESC LIMIT ?";
+   const q=env.DB.prepare(sql),r=c?await q.bind(from,to,c,n).all():await q.bind(from,to,n).all();
+   return json({date:selected,items:r.results||[]});
   }
   if(url.pathname==="/")return new Response(PAGE,{headers:{"content-type":"text/html; charset=utf-8"}});
   return json({error:"not_found"},404);
@@ -50,11 +55,14 @@ export default {
 };
 function cors(){return {"access-control-allow-origin":"*","access-control-allow-methods":"GET,POST,OPTIONS","access-control-allow-headers":"Authorization,Content-Type"}}
 function json(v,s=200){return new Response(JSON.stringify(v),{status:s,headers:{...cors(),"content-type":"application/json; charset=utf-8","cache-control":"no-store"}})}
+function beijingDate(){return new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Shanghai",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date())}
+function validDate(s){if(!/^\\d{4}-\\d{2}-\\d{2}$/.test(s))return false;const d=new Date(s+"T00:00:00Z");return Number.isFinite(d.getTime())&&d.toISOString().slice(0,10)===s}
+function nextDate(s){const d=new Date(s+"T00:00:00Z");d.setUTCDate(d.getUTCDate()+1);return d.toISOString().slice(0,10)}
 const PAGE = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>全球新闻中心</title><style>
 body{margin:0;background:#f3f5f9;color:#172033;font:16px system-ui,"PingFang SC",sans-serif}.wrap{max-width:1000px;margin:auto;padding:24px 16px}h1{margin:0;font-size:26px}.muted,.meta{color:#64748b;font-size:13px}.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:20px 0}.tabs button{border:1px solid #d6deea;background:white;border-radius:18px;padding:8px 13px}.tabs .active{background:#234bb5;color:white}.item,.report,.empty{background:white;border:1px solid #e2e8f0;border-radius:12px;padding:16px;margin:10px 0}.item h2{font-size:18px;line-height:1.45;margin:8px 0}.item a{color:inherit;text-decoration:none}.item a:hover{text-decoration:underline}.summary{line-height:1.65;color:#334155;white-space:pre-wrap}.tag{background:#eef2ff;color:#3730a3;padding:3px 7px;border-radius:5px;font-size:12px}.empty{text-align:center;padding:40px;color:#64748b}@media(prefers-color-scheme:dark){body{background:#101827;color:#e5e7eb}.item,.report,.empty,.tabs button{background:#182235;color:#e5e7eb;border-color:#334155}.summary{color:#cbd5e1}.muted,.meta{color:#9ca3af}}
-:root{color-scheme:light}body{margin:0;background:#f7f6f2;color:#182c30;font-family:"PingFang SC","Microsoft YaHei",sans-serif}.wrap{max-width:760px;padding:36px 18px}.wrap>h1{font:700 clamp(32px,6vw,52px)/1.2 "Songti SC",serif;color:#183d3d}.tabs{position:sticky;top:0;z-index:2;background:#f7f6f2;overflow-x:auto;flex-wrap:nowrap;padding:12px 0;border-bottom:1px solid #bfcac5}.tabs button{flex:none;cursor:pointer;background:white;color:#294843;min-height:42px}.tabs .active{background:#19534b;color:white}.item,.report,.empty{background:white;color:#193139;padding:clamp(16px,4vw,32px);border-radius:12px}.item header,.item footer{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.item h2{font:700 clamp(19px,3vw,25px)/1.5 "Songti SC",serif;margin:14px 0}.item time,.item footer,.muted,.meta{color:#536a69;font-size:13px}.tag{background:#e2f0eb;color:#19534b}.summary{font-size:17px;line-height:1.85;color:#283d40}.photo{width:100%;max-height:410px;object-fit:contain;background:#f2f4f1;border-radius:6px}.item .more{display:inline-block;padding:10px 0;color:#18574f;font-weight:650}.item footer{border-top:1px solid #e2e8e5;margin-top:12px}.tabs button:focus-visible,a:focus-visible{outline:3px solid #a15d16}
-</style><main class="wrap"><h1>全球新闻中心</h1><p class="muted">各站重点新闻 · 每站最多五条 · 按北京时间倒序</p><div id="status" class="muted">正在连接…</div><nav class="tabs"><button class="active" data-cat="">全部</button><button data-cat="国际政治">国际政治</button><button data-cat="AI与科技">人工智能与科技</button><button data-cat="全球经济金融">全球经济金融</button><button data-cat="社会与突发">社会与突发</button><button data-cat="reports">采集记录</button></nav><section id="content"><div class="empty">加载中…</div></section></main><script>
-const box=document.querySelector('#content'),status=document.querySelector('#status');let cat='';
+.datebar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;background:white;border:1px solid #dce5df;border-radius:12px;padding:12px;margin:18px 0}.datebar input,.datebar button{font:inherit;border:1px solid #d5dfd9;border-radius:8px;background:white;color:#24443e;padding:9px;min-height:40px}.datebar button{cursor:pointer}.datebar b{margin-right:auto;color:#193f3b}@media(max-width:520px){.datebar{gap:6px}.datebar b{width:100%}.datebar button,.datebar input{flex:1;min-width:0}}:root{color-scheme:light}body{margin:0;background:#f7f6f2;color:#182c30;font-family:"PingFang SC","Microsoft YaHei",sans-serif}.wrap{max-width:760px;padding:36px 18px}.wrap>h1{font:700 clamp(32px,6vw,52px)/1.2 "Songti SC",serif;color:#183d3d}.tabs{position:sticky;top:0;z-index:2;background:#f7f6f2;overflow-x:auto;flex-wrap:nowrap;padding:12px 0;border-bottom:1px solid #bfcac5}.tabs button{flex:none;cursor:pointer;background:white;color:#294843;min-height:42px}.tabs .active{background:#19534b;color:white}.item,.report,.empty{background:white;color:#193139;padding:clamp(16px,4vw,32px);border-radius:12px}.item header,.item footer{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.item h2{font:700 clamp(19px,3vw,25px)/1.5 "Songti SC",serif;margin:14px 0}.item time,.item footer,.muted,.meta{color:#536a69;font-size:13px}.tag{background:#e2f0eb;color:#19534b}.summary{font-size:17px;line-height:1.85;color:#283d40}.photo{width:100%;max-height:410px;object-fit:contain;background:#f2f4f1;border-radius:6px}.item .more{display:inline-block;padding:10px 0;color:#18574f;font-weight:650}.item footer{border-top:1px solid #e2e8e5;margin-top:12px}.tabs button:focus-visible,a:focus-visible{outline:3px solid #a15d16}
+</style><main class="wrap"><h1>全球新闻中心</h1><p class="muted">各站重点新闻 · 每站最多五条 · 按北京时间倒序</p><div id="status" class="muted">正在连接…</div><section class="datebar"><b id="dateTitle">当天新闻</b><button id="prevDay">‹ 前一天</button><input id="datePicker" type="date" aria-label="选择日期"><button id="nextDay">后一天 ›</button></section><nav class="tabs"><button class="active" data-cat="">全部</button><button data-cat="国际政治">国际政治</button><button data-cat="AI与科技">人工智能与科技</button><button data-cat="全球经济金融">全球经济金融</button><button data-cat="社会与突发">社会与突发</button><button data-cat="reports">采集记录</button></nav><section id="content"><div class="empty">加载中…</div></section></main><script>
+const box=document.querySelector('#content'),status=document.querySelector('#status'),picker=document.querySelector('#datePicker'),dateTitle=document.querySelector('#dateTitle'),prev=document.querySelector('#prevDay'),next=document.querySelector('#nextDay');let cat='',selectedDate=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());function today(){return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())}function showDate(){dateTitle.textContent=selectedDate+'（北京时间）';picker.value=selectedDate;next.disabled=selectedDate>=today()}function shiftDate(n){const d=new Date(selectedDate+'T12:00:00Z');d.setUTCDate(d.getUTCDate()+n);selectedDate=d.toISOString().slice(0,10);showDate();load()}
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 let sequence=0;
 const formatter=new Intl.DateTimeFormat('zh-CN',{dateStyle:'long',timeStyle:'short',timeZone:'Asia/Shanghai'});
@@ -62,11 +70,11 @@ function date(value){const d=new Date(value);return value && Number.isFinite(d.g
 async function load(){
  const id=++sequence,report=cat==='reports';
  try{
-  const response=await fetch(report?'/api/reports':'/api/news'+(cat?'?category='+encodeURIComponent(cat):''));
+  const params=new URLSearchParams({date:selectedDate});if(cat&&!report)params.set('category',cat);const response=await fetch((report?'/api/reports':'/api/news')+'?'+params.toString(),{cache:'no-store'});
   if(!response.ok)throw Error();
   const data=await response.json();
   if(id!==sequence)return;
-  status.textContent='北京时间（东八区）';
+  status.textContent='按日期归档 · 北京时间 UTC+8';
   box.innerHTML=data.items.map(x=>{
    if(report)return '<article class="report"><b>'+date(x.run_at)+'</b><p>本轮收录 '+esc(x.new_count)+' 条新条目</p><div class="meta">候选 '+esc(x.candidate_count)+' · 来源错误 '+esc(x.source_error_count)+'</div></article>';
    const title=esc(x.title),safe=/^https?:/i.test(x.url);
@@ -77,5 +85,5 @@ async function load(){
   }).join('')||'<div class="empty">暂无记录，等待下一轮采集。</div>';
  }catch{if(id===sequence){status.textContent='读取失败';box.innerHTML='<div class="empty">暂时无法读取数据，请稍后刷新。</div>'}}
 }
-document.querySelectorAll('[data-cat]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-cat]').forEach(x=>x.classList.remove('active'));b.classList.add('active');cat=b.dataset.cat;load()});load();setInterval(load,60000);
+document.querySelectorAll('[data-cat]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-cat]').forEach(x=>x.classList.remove('active'));b.classList.add('active');cat=b.dataset.cat;load()});prev.onclick=()=>shiftDate(-1);next.onclick=()=>{if(selectedDate<today())shiftDate(1)};picker.onchange=()=>{if(picker.value&&picker.value<=today()){selectedDate=picker.value;showDate();load()}else showDate()};showDate();load();setInterval(load,60000);
 </script></html>`;
