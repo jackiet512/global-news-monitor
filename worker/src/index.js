@@ -70,7 +70,7 @@ export default {
     return json({error:"dispatch"},502);
    }
   }
-  if(url.pathname==="/")return new Response(PAGE,{headers:{"content-type":"text/html; charset=utf-8"}});
+  if(url.pathname==="/")return new Response(env.GITHUB_ACTIONS_TOKEN?PAGE:PAGE.replace('<button type="button" id="collect">手动采集最新新闻</button>','<button type="button" id="collect">手动采集最新新闻 ↗</button>').replace('trigger.onclick=async()=>{',`trigger.onclick=async()=>{window.open('https://github.com/jackiet512/global-news-monitor/actions/workflows/collect.yml','_blank','noopener');notice.textContent='请在 GitHub 点击 Run workflow，选择 main 并确认运行。完成后可在本站查看采集记录。';return;`),{headers:{"content-type":"text/html; charset=utf-8"}});
   return json({error:"not_found"},404);
  }
 };
