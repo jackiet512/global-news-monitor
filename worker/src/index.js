@@ -53,6 +53,23 @@ export default {
    const q=env.DB.prepare(sql),r=c?await q.bind(from,to,c,n).all():await q.bind(from,to,n).all();
    return json({date:selected,items:r.results||[]});
   }
+  if(url.pathname==="/api/collect" && request.method==="POST"){
+   if(request.headers.get("Origin")!==url.origin)return json({error:"origin"},403);
+   if(!env.GITHUB_ACTIONS_TOKEN)return json({error:"setup"},503);
+   await env.DB.prepare("CREATE TABLE IF NOT EXISTS manual_dispatch(id INTEGER PRIMARY KEY, started INTEGER NOT NULL)").run();
+   const now=Date.now();
+   const claim=await env.DB.prepare("INSERT INTO manual_dispatch VALUES(1,?) ON CONFLICT(id) DO UPDATE SET started=excluded.started WHERE started<?").bind(now,now-600000).run();
+   if(!claim.meta.changes)return json({error:"recent"},429);
+   try{
+    const dispatch=await fetch("https://api.github.com/repos/jackiet512/global-news-monitor/actions/workflows/collect.yml/dispatches",{method:"POST",headers:{Authorization:"Bearer "+env.GITHUB_ACTIONS_TOKEN,Accept:"application/vnd.github+json","Content-Type":"application/json","User-Agent":"GlobalNewsMonitor"},body:JSON.stringify({ref:"main",return_run_details:true})});
+    if(!dispatch.ok)throw Error();
+    const detail=dispatch.status===204?{}:await dispatch.json();
+    return json({submitted:true,run_id:detail.workflow_run_id||null},202);
+   }catch{
+    await env.DB.prepare("DELETE FROM manual_dispatch WHERE id=1 AND started=?").bind(now).run();
+    return json({error:"dispatch"},502);
+   }
+  }
   if(url.pathname==="/")return new Response(PAGE,{headers:{"content-type":"text/html; charset=utf-8"}});
   return json({error:"not_found"},404);
  }
@@ -86,7 +103,7 @@ function nextDate(s){const d=new Date(s+"T00:00:00Z");d.setUTCDate(d.getUTCDate(
 const PAGE = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>全球新闻中心</title><style>
 body{margin:0;background:#f3f5f9;color:#172033;font:16px system-ui,"PingFang SC",sans-serif}.wrap{max-width:1000px;margin:auto;padding:24px 16px}h1{margin:0;font-size:26px}.muted,.meta{color:#64748b;font-size:13px}.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:20px 0}.tabs button{border:1px solid #d6deea;background:white;border-radius:18px;padding:8px 13px}.tabs .active{background:#234bb5;color:white}.item,.report,.empty{background:white;border:1px solid #e2e8f0;border-radius:12px;padding:16px;margin:10px 0}.item h2{font-size:18px;line-height:1.45;margin:8px 0}.item a{color:inherit;text-decoration:none}.item a:hover{text-decoration:underline}.summary{line-height:1.65;color:#334155;white-space:pre-wrap}.tag{background:#eef2ff;color:#3730a3;padding:3px 7px;border-radius:5px;font-size:12px}.empty{text-align:center;padding:40px;color:#64748b}@media(prefers-color-scheme:dark){body{background:#101827;color:#e5e7eb}.item,.report,.empty,.tabs button{background:#182235;color:#e5e7eb;border-color:#334155}.summary{color:#cbd5e1}.muted,.meta{color:#9ca3af}}
 .datebar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;background:white;border:1px solid #dce5df;border-radius:12px;padding:12px;margin:18px 0}.datebar input,.datebar button{font:inherit;border:1px solid #d5dfd9;border-radius:8px;background:white;color:#24443e;padding:9px;min-height:40px}.datebar button{cursor:pointer}.datebar b{margin-right:auto;color:#193f3b}@media(max-width:520px){.datebar{gap:6px}.datebar b{width:100%}.datebar button,.datebar input{flex:1;min-width:0}}:root{color-scheme:light}body{margin:0;background:#f7f6f2;color:#182c30;font-family:"PingFang SC","Microsoft YaHei",sans-serif}.wrap{max-width:760px;padding:36px 18px}.wrap>h1{font:700 clamp(32px,6vw,52px)/1.2 "Songti SC",serif;color:#183d3d}.tabs{position:sticky;top:0;z-index:2;background:#f7f6f2;overflow-x:auto;flex-wrap:nowrap;padding:12px 0;border-bottom:1px solid #bfcac5}.tabs button{flex:none;cursor:pointer;background:white;color:#294843;min-height:42px}.tabs .active{background:#19534b;color:white}.item,.report,.empty{background:white;color:#193139;padding:clamp(16px,4vw,32px);border-radius:12px}.item header,.item footer{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.item h2{font:700 clamp(19px,3vw,25px)/1.5 "Songti SC",serif;margin:14px 0}.item time,.item footer,.muted,.meta{color:#536a69;font-size:13px}.tag{background:#e2f0eb;color:#19534b}.summary{font-size:17px;line-height:1.85;color:#283d40}.photo{width:100%;max-height:410px;object-fit:contain;background:#f2f4f1;border-radius:6px}.item .more{display:inline-block;padding:10px 0;color:#18574f;font-weight:650}.item footer{border-top:1px solid #e2e8e5;margin-top:12px}.tabs button:focus-visible,a:focus-visible{outline:3px solid #a15d16}
-</style><main class="wrap"><h1>全球新闻中心</h1><p class="muted">各站重点新闻 · 每站最多五条 · 按北京时间倒序</p><div id="status" class="muted">正在连接…</div><section class="datebar"><b id="dateTitle">当天新闻</b><button id="prevDay">‹ 前一天</button><input id="datePicker" type="date" aria-label="选择日期"><button id="nextDay">后一天 ›</button></section><nav class="tabs"><button class="active" data-cat="">全部</button><button data-cat="国际政治">国际政治</button><button data-cat="AI与科技">人工智能与科技</button><button data-cat="全球经济金融">全球经济金融</button><button data-cat="社会与突发">社会与突发</button><button data-cat="reports">采集记录</button></nav><section id="content"><div class="empty">加载中…</div></section></main><script>
+</style><main class="wrap"><h1>全球新闻中心</h1><p class="muted">各站重点新闻 · 每站最多五条 · 按北京时间倒序</p><div id="status" class="muted">正在连接…</div><section class="datebar"><button type="button" id="collect">手动采集最新新闻</button><b id="dateTitle">当天新闻</b><button id="prevDay">‹ 前一天</button><input id="datePicker" type="date" aria-label="选择日期"><button id="nextDay">后一天 ›</button></section><div id="dispatchState" role="status" class="muted"></div><nav class="tabs"><button class="active" data-cat="">全部</button><button data-cat="国际政治">国际政治</button><button data-cat="AI与科技">人工智能与科技</button><button data-cat="全球经济金融">全球经济金融</button><button data-cat="社会与突发">社会与突发</button><button data-cat="reports">采集记录</button></nav><section id="content"><div class="empty">加载中…</div></section></main><script>
 const box=document.querySelector('#content'),status=document.querySelector('#status'),picker=document.querySelector('#datePicker'),dateTitle=document.querySelector('#dateTitle'),prev=document.querySelector('#prevDay'),next=document.querySelector('#nextDay');let cat='',selectedDate=beijingToday();function beijingToday(){const p=new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).reduce((a,x)=>(a[x.type]=x.value,a),{});return p.year+'-'+p.month+'-'+p.day}function today(){return beijingToday()}function showDate(){dateTitle.textContent=selectedDate+'（北京时间）';picker.value=selectedDate;next.disabled=selectedDate>=today()}function shiftDate(n){const d=new Date(selectedDate+'T12:00:00Z');d.setUTCDate(d.getUTCDate()+n);selectedDate=d.toISOString().slice(0,10);showDate();load()}
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 let sequence=0;
@@ -110,5 +127,34 @@ async function load(){
   }).join('')||'<div class="empty">暂无记录，等待下一轮采集。</div>';
  }catch{if(id===sequence){status.textContent='读取失败';box.innerHTML='<div class="empty">暂时无法读取数据，请稍后刷新。</div>'}}
 }
+const trigger=document.querySelector('#collect'),notice=document.querySelector('#dispatchState');
+trigger.onclick=async()=>{
+ trigger.disabled=true;notice.textContent='正在提交采集任务…';
+ const workflow='https://github.com/jackiet512/global-news-monitor/actions/workflows/collect.yml';
+ try{
+  const response=await fetch('/api/collect',{method:'POST'});
+  const detail=await response.json();
+  if(response.status===429){notice.textContent='最近十分钟内已有人发起采集，请查看采集记录。';return}
+  if(!response.ok)throw Error();
+  notice.textContent='已提交采集任务。';
+  if(detail.run_id){
+   for(let i=0;i<64;i++){
+    await new Promise(resolve=>setTimeout(resolve,10000));
+    const r=await fetch('https://api.github.com/repos/jackiet512/global-news-monitor/actions/runs/'+detail.run_id);
+    if(!r.ok)break;
+    const run=await r.json();
+    if(run.status==='completed'){
+     notice.textContent=run.conclusion==='success'?'采集完成，已更新列表。':'采集任务未成功，请查看运行记录。';
+     await load();return;
+    }
+    notice.textContent=run.status==='in_progress'?'正在采集新闻…':'任务已排队…';
+   }
+  }
+  notice.textContent='任务已提交，进度可在运行记录中查看。';
+ }catch{notice.textContent='未能确认提交，请在运行记录中检查或手动启动。'}
+ finally{
+  const a=document.createElement('a');a.href=workflow;a.target='_blank';a.rel='noopener';a.textContent=' 查看运行记录';notice.append(a);trigger.disabled=false;
+ }
+};
 document.querySelectorAll('[data-cat]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-cat]').forEach(x=>x.classList.remove('active'));b.classList.add('active');cat=b.dataset.cat;load()});prev.onclick=()=>shiftDate(-1);next.onclick=()=>{if(selectedDate<today())shiftDate(1)};picker.onchange=()=>{if(picker.value&&picker.value<=today()){selectedDate=picker.value;showDate();load()}else showDate()};showDate();load();setInterval(load,60000);
 </script></html>`;
