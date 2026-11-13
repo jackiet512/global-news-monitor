@@ -6,3 +6,6 @@ compatibility_date = "2026-11-12"
 binding = "DB"
 database_name = "global-news-db"
 database_id = "9432b7e0-a5d1-4c42-97a5-63c9e1aae54d"
+
+[triggers]
+crons = ["20,50 * * * *"]
