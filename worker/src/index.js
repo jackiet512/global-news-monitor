@@ -1,5 +1,8 @@
 import editorial from "./editorial.json";
 export default {
+ async scheduled(controller,env,ctx){
+  ctx.waitUntil(runGitHubScheduleFallback(env));
+ },
  async fetch(request,env){
   const url=new URL(request.url);
   if(request.method==="OPTIONS") return new Response(null,{headers:cors()});
@@ -54,6 +57,27 @@ export default {
   return json({error:"not_found"},404);
  }
 };
+async function runGitHubScheduleFallback(env){
+ const token=env.GITHUB_ACTIONS_TOKEN;
+ if(!token){console.error("schedule-fallback: missing GITHUB_ACTIONS_TOKEN");return}
+ const headers={"Authorization":"Bearer "+token,"Accept":"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28","User-Agent":"GlobalNewsMonitor-ScheduleFallback"};
+ const endpoint="https://api.github.com/repos/jackiet512/global-news-monitor/actions/workflows/collect.yml/runs?branch=main&per_page=10";
+ try{
+  const response=await fetch(endpoint,{headers});
+  if(!response.ok)throw new Error("list workflow runs HTTP "+response.status+" "+(await response.text()).slice(0,300));
+  const data=await response.json();
+  const latest=(data.workflow_runs||[]).sort((a,b)=>Date.parse(b.created_at)-Date.parse(a.created_at))[0];
+  const age=latest?Date.now()-Date.parse(latest.created_at):Number.POSITIVE_INFINITY;
+  const stale=!latest||!Number.isFinite(age)||age>45*60*1000;
+  if(!stale){
+   console.log("schedule-fallback: recent workflow run exists",JSON.stringify({id:latest.id,status:latest.status,event:latest.event,age_minutes:Math.round(age/60000)}));
+   return;
+  }
+  const dispatch=await fetch("https://api.github.com/repos/jackiet512/global-news-monitor/actions/workflows/collect.yml/dispatches",{method:"POST",headers:{...headers,"Content-Type":"application/json"},body:JSON.stringify({ref:"main"})});
+  if(dispatch.status!==204)throw new Error("workflow dispatch HTTP "+dispatch.status+" "+(await dispatch.text()).slice(0,300));
+  console.log("schedule-fallback: dispatched collector because latest run was stale",JSON.stringify({previous_run_id:latest?.id||null,age_minutes:Number.isFinite(age)?Math.round(age/60000):null}));
+ }catch(error){console.error("schedule-fallback failed",String(error))}
+}
 function cors(){return {"access-control-allow-origin":"*","access-control-allow-methods":"GET,POST,OPTIONS","access-control-allow-headers":"Authorization,Content-Type"}}
 function json(v,s=200){return new Response(JSON.stringify(v),{status:s,headers:{...cors(),"content-type":"application/json; charset=utf-8","cache-control":"no-store"}})}
 function beijingDate(){const p=new Intl.DateTimeFormat("en-US",{timeZone:"Asia/Shanghai",year:"numeric",month:"2-digit",day:"2-digit"}).formatToParts(new Date()).reduce((a,x)=>(a[x.type]=x.value,a),{});return p.year+"-"+p.month+"-"+p.day}
