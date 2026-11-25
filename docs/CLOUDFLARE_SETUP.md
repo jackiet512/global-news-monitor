@@ -6,6 +6,7 @@
 cd worker
 npm install
 npx wrangler d1 execute global-news-db --remote --file=../migrations/0001_init.sql
+npx wrangler d1 execute global-news-db --remote --file=../migrations/0002_context.sql
 npm run deploy
 npx wrangler secret put INGEST_TOKEN
 npx wrangler secret put GITHUB_ACTIONS_TOKEN
@@ -13,7 +14,9 @@ npx wrangler secret put GITHUB_ACTIONS_TOKEN
 
 在 GitHub 仓库的 Actions 密钥设置中保存写入接口地址 `NEWS_INGEST_URL` 和令牌 `NEWS_INGEST_TOKEN`。令牌须与生产环境的 `INGEST_TOKEN` 相同。仅在密钥输入界面填写令牌。
 
-手动运行采集工作流，查看写入结果，并通过 `/api/news` 和 `/api/reports` 核对新闻和报告。
+手动运行采集工作流，查看写入结果，并通过 `/api/news`、`/api/reports` 和 `/api/pulse?fingerprint=<64hex>` 核对新闻、报告与社区/市场脉络。
+
+`0002_context.sql` 创建 `news_context` 表，存储每条新闻关联的 Polymarket 盘口 JSON、HN/Reddit 社区讨论 JSON 及检索词；`/api/ingest` 采集入库时同步写入，`/api/pulse` 在未命中 30 分钟缓存时并发查询免密钥公开接口并回写。
 
 
 ## 双重定时保障

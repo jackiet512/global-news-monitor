@@ -13,6 +13,9 @@ from reading import enrich
 from events import signals, same_event, incident_clues, matching_incident
 from headlines import publication_metadata
 from programme import channel, schedule
+from hackernews import collect_hn
+from polymarket import attach_polymarket
+from community import enrich_items
 import feedparser
 from bs4 import BeautifulSoup
 
@@ -119,5 +122,32 @@ def collect(relevant):
             seen.add(key);urls.add(link);count+=1
             if count==5:break
         if count<5:errors.append(dict(source=name,error=f"本轮取得 {count} 条可展示新闻"))
-    enrich(items,SITES,read,chinese)
-    return [item for item in items if not item.get("channel_page")],errors
+    try:
+        hn_items, hn_status = collect_hn(chinese, chinese, limit=5)
+        if hn_status == "unavailable":
+            errors.append(dict(source="Hacker News", error="HN Algolia 不可用"))
+        for row in hn_items:
+            row["collected_at"] = datetime.now(BJ).isoformat()
+            row["verification_status"] = "待核实"
+            key = re.sub(r"[^一-鿿a-z0-9]", "", row["title"].lower())
+            if not key or duplicate(key, seen):
+                continue
+            event = signals(row["original_title"], row["title"], row["published_at"])
+            if any(same_event(event, previous) for previous in events):
+                continue
+            items.append(row)
+            events.append(event)
+            seen.add(key)
+            urls.add(row["url"])
+    except Exception:
+        errors.append(dict(source="Hacker News", error="HN 热榜采集异常"))
+    enrich(items, SITES, read, chinese)
+    try:
+        attach_polymarket(items, translate=chinese)
+    except Exception:
+        errors.append(dict(source="Polymarket", error="盘口匹配异常"))
+    try:
+        enrich_items(items, translate=chinese)
+    except Exception:
+        errors.append(dict(source="Community", error="社区脉络检索异常"))
+    return [item for item in items if not item.get("channel_page")], errors

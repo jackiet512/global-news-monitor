@@ -1,4 +1,3 @@
-import editorial from "./editorial.json";
 export default {
  async scheduled(controller,env,ctx){
   ctx.waitUntil(runGitHubScheduleFallback(env));
@@ -24,6 +23,14 @@ export default {
     statements.push(db.prepare("UPDATE reports SET new_count=new_count+changes() WHERE id=(SELECT MAX(id) FROM reports)"));
    }
    statements.push(db.prepare("CREATE TABLE IF NOT EXISTS news_reading (fingerprint TEXT PRIMARY KEY,image_url TEXT,reading_text TEXT,short_body INTEGER)"));
+   statements.push(db.prepare("CREATE TABLE IF NOT EXISTS news_context (fingerprint TEXT PRIMARY KEY,polymarket_json TEXT,community_json TEXT,query_terms TEXT,updated_at TEXT NOT NULL)"));
+   const ctxRows=b.items.filter(x=>x.polymarket||x.community||x.query_terms||x.hn_meta);
+   for(const row of ctxRows){
+    const community=row.community?{...row.community}:row.hn_meta?{hn_meta:row.hn_meta}:{};
+    if(row.hn_meta) community.hn_meta=row.hn_meta;
+    const pm=safeJsonString(row.polymarket,8000),cm=safeJsonString(Object.keys(community).length?community:null,16000),qt=safeJsonString(row.query_terms,2000);
+    if(pm||cm||qt) statements.push(db.prepare("INSERT OR REPLACE INTO news_context (fingerprint,polymarket_json,community_json,query_terms,updated_at) VALUES (?,?,?,?,?)").bind(row.fingerprint,pm,cm,qt,b.run_at));
+   }
    const enriched=b.items.filter(x=>x.image_url||x.reading_text);
    for(let i=0;i<enriched.length;i+=20){
     const group=enriched.slice(i,i+20);
@@ -48,10 +55,51 @@ export default {
     return json({date:selected,items:r.results||[]});
    }
    await env.DB.prepare("CREATE TABLE IF NOT EXISTS news_reading (fingerprint TEXT PRIMARY KEY,image_url TEXT,reading_text TEXT,short_body INTEGER)").run();
+   await env.DB.prepare("CREATE TABLE IF NOT EXISTS news_context (fingerprint TEXT PRIMARY KEY,polymarket_json TEXT,community_json TEXT,query_terms TEXT,updated_at TEXT NOT NULL)").run();
    const n=Math.min(Math.max((parseInt(url.searchParams.get("limit"),10)||100),1),200),c=url.searchParams.get("category");
-   const sql="SELECT ni.*,nr.image_url,nr.reading_text,nr.short_body FROM news_items ni LEFT JOIN news_reading nr ON nr.fingerprint=ni.fingerprint WHERE julianday(COALESCE(ni.published_at,ni.collected_at))>=julianday(?) AND julianday(COALESCE(ni.published_at,ni.collected_at))<julianday(?)"+(c?" AND ni.category=?":"")+" ORDER BY julianday(COALESCE(ni.published_at,ni.collected_at)) DESC LIMIT ?";
+   const sql="SELECT ni.*,nr.image_url,nr.reading_text,nr.short_body,nc.polymarket_json,nc.community_json,nc.query_terms FROM news_items ni LEFT JOIN news_reading nr ON nr.fingerprint=ni.fingerprint LEFT JOIN news_context nc ON nc.fingerprint=ni.fingerprint WHERE julianday(COALESCE(ni.published_at,ni.collected_at))>=julianday(?) AND julianday(COALESCE(ni.published_at,ni.collected_at))<julianday(?)"+(c?" AND ni.category=?":"")+" ORDER BY julianday(COALESCE(ni.published_at,ni.collected_at)) DESC LIMIT ?";
    const q=env.DB.prepare(sql),r=c?await q.bind(from,to,c,n).all():await q.bind(from,to,n).all();
-   return json({date:selected,items:r.results||[]});
+   const items=(r.results||[]).map(row=>{
+    const community=parseJsonField(row.community_json)||{};
+    const hn_meta=community.hn_meta||null;
+    const cleanCommunity={hn:community.hn||[],reddit:community.reddit||[]};
+    return {...row,polymarket:parseJsonField(row.polymarket_json),community:cleanCommunity,hn_meta,query_terms:parseJsonField(row.query_terms),polymarket_json:undefined,community_json:undefined};
+   });
+   return json({date:selected,items});
+  }
+  if(url.pathname==="/api/pulse"){
+   if(!env.DB)return json({error:"database_not_configured"},503);
+   const fp=url.searchParams.get("fingerprint")||"";
+   if(!/^[a-f0-9]{64}$/i.test(fp))return json({error:"invalid_fingerprint"},400);
+   await env.DB.prepare("CREATE TABLE IF NOT EXISTS news_context (fingerprint TEXT PRIMARY KEY,polymarket_json TEXT,community_json TEXT,query_terms TEXT,updated_at TEXT NOT NULL)").run();
+   const row=await env.DB.prepare("SELECT ni.title,ni.url,nc.polymarket_json,nc.community_json,nc.query_terms,nc.updated_at FROM news_items ni LEFT JOIN news_context nc ON nc.fingerprint=ni.fingerprint WHERE ni.fingerprint=?").bind(fp).first();
+   if(!row)return json({error:"not_found"},404);
+   const refresh=url.searchParams.get("refresh")==="1";
+   let polymarket=parseJsonField(row.polymarket_json),community=parseJsonField(row.community_json)||{hn:[],reddit:[]},queryTerms=parseJsonField(row.query_terms)||[];
+   const cachedAt=row.updated_at?Date.parse(row.updated_at):0;
+   const fresh=cachedAt && Date.now()-cachedAt<30*60*1000;
+   const hasCommunity=community&&((community.hn&&community.hn.length)||(community.reddit&&community.reddit.length));
+   if(!refresh&&fresh&&hasCommunity){
+    return json({ok:true,fingerprint:fp,cached:true,polymarket,community,query_terms:queryTerms,source_status:{hn:community.hn?.length?"ok":"empty",reddit:community.reddit?.length?"ok":"empty",polymarket:polymarket?"ok":"empty"},updated_at:row.updated_at});
+   }
+   const q=Array.isArray(queryTerms)&&queryTerms.length?queryTerms.join(" "):extractTerms(row.title);
+   const [hnSettle,redditSettle,pmSettle]=await Promise.allSettled([fetchHn(q),fetchReddit(q),polymarket?Promise.resolve(null):fetchPolymarket()]);
+   const sourceStatus={hn:"unavailable",reddit:"unavailable",polymarket:polymarket?"ok":"unavailable"};
+   if(hnSettle.status==="fulfilled"){
+    const hn=hnSettle.value;
+    sourceStatus.hn=hn?.length?"ok":"empty";
+    if(hn?.length) community={...community,hn:mergeDiscussions(community.hn,hn)};
+   }
+   if(redditSettle.status==="fulfilled"){
+    const rd=redditSettle.value;
+    sourceStatus.reddit=rd?.length?"ok":"empty";
+    if(rd?.length) community={...community,reddit:rd};
+   }
+   if(!polymarket&&pmSettle.status==="fulfilled"&&pmSettle.value) polymarket=pmSettle.value;
+   if(polymarket) sourceStatus.polymarket="ok";
+   const updated=new Date().toISOString();
+   await env.DB.prepare("INSERT OR REPLACE INTO news_context (fingerprint,polymarket_json,community_json,query_terms,updated_at) VALUES (?,?,?,?,?)").bind(fp,safeJsonString(polymarket,8000),safeJsonString(community,16000),safeJsonString(queryTerms,2000),updated).run();
+   return json({ok:true,fingerprint:fp,cached:false,polymarket,community,query_terms:queryTerms,source_status:sourceStatus,updated_at:updated});
   }
   if(url.pathname==="/api/collect" && request.method==="POST"){
    if(request.headers.get("Origin")!==url.origin)return json({error:"origin"},403);
@@ -100,15 +148,64 @@ function json(v,s=200){return new Response(JSON.stringify(v),{status:s,headers:{
 function beijingDate(){const p=new Intl.DateTimeFormat("en-US",{timeZone:"Asia/Shanghai",year:"numeric",month:"2-digit",day:"2-digit"}).formatToParts(new Date()).reduce((a,x)=>(a[x.type]=x.value,a),{});return p.year+"-"+p.month+"-"+p.day}
 function validDate(s){if(!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(s))return false;const d=new Date(s+"T00:00:00Z");return Number.isFinite(d.getTime())&&d.toISOString().slice(0,10)===s}
 function nextDate(s){const d=new Date(s+"T00:00:00Z");d.setUTCDate(d.getUTCDate()+1);return d.toISOString().slice(0,10)}
+function parseJsonField(raw){if(raw==null||raw==="")return null;try{return JSON.parse(raw)}catch{return null}}
+function safeJsonString(v,max){if(v==null)return null;try{const s=JSON.stringify(v);return s.length>max?null:s}catch{return null}}
+function extractTerms(title){return String(title||"").split(/[^a-zA-Z\u4e00-\u9fff]+/).filter(w=>w.length>2).slice(0,6)}
+function mergeDiscussions(a,b){const out=[...(a||[])];for(const x of b||[]){if(!out.some(y=>y.discussion_url===x.discussion_url||y.title===x.title))out.push(x)}return out}
+async function fetchHn(query){
+ const u="https://hn.algolia.com/api/v1/search?tags=story&hitsPerPage=5&query="+encodeURIComponent(query);
+ const r=await fetch(u,{headers:{"User-Agent":"GlobalNewsMonitor/1.0"},signal:AbortSignal.timeout(5000)});
+ if(!r.ok)return null;
+ const data=await r.json();
+ return (data.hits||[]).map(h=>({title:h.title||h.story_title||"",points:+(h.points||0),num_comments:+(h.num_comments||0),discussion_url:h.objectID?"https://news.ycombinator.com/item?id="+h.objectID:"",url:h.url||""}));
+}
+async function fetchReddit(query){
+ const u="https://www.reddit.com/search.json?q="+encodeURIComponent(query)+"&sort=relevance&t=month&limit=5&raw_json=1";
+ const r=await fetch(u,{headers:{"User-Agent":"GlobalNewsMonitor/1.0"},signal:AbortSignal.timeout(5000)});
+ if(!r.ok)return null;
+ const data=await r.json();
+ return ((data.data||{}).children||[]).map(c=>{const p=c.data||{};return {subreddit:p.subreddit||"",title:p.title||"",score:+(p.score||0),num_comments:+(p.num_comments||0),url:p.permalink?"https://www.reddit.com"+p.permalink:""}});
+}
+async function fetchPolymarket(){return null}
 const PAGE = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>全球新闻中心</title><style>
 body{margin:0;background:#f3f5f9;color:#172033;font:16px system-ui,"PingFang SC",sans-serif}.wrap{max-width:1000px;margin:auto;padding:24px 16px}h1{margin:0;font-size:26px}.muted,.meta{color:#64748b;font-size:13px}.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:20px 0}.tabs button{border:1px solid #d6deea;background:white;border-radius:18px;padding:8px 13px}.tabs .active{background:#234bb5;color:white}.item,.report,.empty{background:white;border:1px solid #e2e8f0;border-radius:12px;padding:16px;margin:10px 0}.item h2{font-size:18px;line-height:1.45;margin:8px 0}.item a{color:inherit;text-decoration:none}.item a:hover{text-decoration:underline}.summary{line-height:1.65;color:#334155;white-space:pre-wrap}.tag{background:#eef2ff;color:#3730a3;padding:3px 7px;border-radius:5px;font-size:12px}.empty{text-align:center;padding:40px;color:#64748b}@media(prefers-color-scheme:dark){body{background:#101827;color:#e5e7eb}.item,.report,.empty,.tabs button{background:#182235;color:#e5e7eb;border-color:#334155}.summary{color:#cbd5e1}.muted,.meta{color:#9ca3af}}
-.datebar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;background:white;border:1px solid #dce5df;border-radius:12px;padding:12px;margin:18px 0}.datebar input,.datebar button{font:inherit;border:1px solid #d5dfd9;border-radius:8px;background:white;color:#24443e;padding:9px;min-height:40px}.datebar button{cursor:pointer}.datebar b{margin-right:auto;color:#193f3b}@media(max-width:520px){.datebar{gap:6px}.datebar b{width:100%}.datebar button,.datebar input{flex:1;min-width:0}}:root{color-scheme:light}body{margin:0;background:#f7f6f2;color:#182c30;font-family:"PingFang SC","Microsoft YaHei",sans-serif}.wrap{max-width:760px;padding:36px 18px}.wrap>h1{font:700 clamp(32px,6vw,52px)/1.2 "Songti SC",serif;color:#183d3d}.tabs{position:sticky;top:0;z-index:2;background:#f7f6f2;overflow-x:auto;flex-wrap:nowrap;padding:12px 0;border-bottom:1px solid #bfcac5}.tabs button{flex:none;cursor:pointer;background:white;color:#294843;min-height:42px}.tabs .active{background:#19534b;color:white}.item,.report,.empty{background:white;color:#193139;padding:clamp(16px,4vw,32px);border-radius:12px}.item header,.item footer{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.item h2{font:700 clamp(19px,3vw,25px)/1.5 "Songti SC",serif;margin:14px 0}.item time,.item footer,.muted,.meta{color:#536a69;font-size:13px}.tag{background:#e2f0eb;color:#19534b}.summary{font-size:17px;line-height:1.85;color:#283d40}.photo{width:100%;max-height:410px;object-fit:contain;background:#f2f4f1;border-radius:6px}.item .more{display:inline-block;padding:10px 0;color:#18574f;font-weight:650}.item footer{border-top:1px solid #e2e8e5;margin-top:12px}.tabs button:focus-visible,a:focus-visible{outline:3px solid #a15d16}
+.datebar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;background:white;border:1px solid #dce5df;border-radius:12px;padding:12px;margin:18px 0}.datebar input,.datebar button{font:inherit;border:1px solid #d5dfd9;border-radius:8px;background:white;color:#24443e;padding:9px;min-height:40px}.datebar button{cursor:pointer}.datebar b{margin-right:auto;color:#193f3b}@media(max-width:520px){.datebar{gap:6px}.datebar b{width:100%}.datebar button,.datebar input{flex:1;min-width:0}}:root{color-scheme:light}body{margin:0;background:#f7f6f2;color:#182c30;font-family:"PingFang SC","Microsoft YaHei",sans-serif}.wrap{max-width:760px;padding:36px 18px}.wrap>h1{font:700 clamp(32px,6vw,52px)/1.2 "Songti SC",serif;color:#183d3d}.tabs{position:sticky;top:0;z-index:2;background:#f7f6f2;overflow-x:auto;flex-wrap:nowrap;padding:12px 0;border-bottom:1px solid #bfcac5}.tabs button{flex:none;cursor:pointer;background:white;color:#294843;min-height:42px}.tabs .active{background:#19534b;color:white}.item,.report,.empty{background:white;color:#193139;padding:clamp(16px,4vw,32px);border-radius:12px}.item header,.item footer{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.item h2{font:700 clamp(19px,3vw,25px)/1.5 "Songti SC",serif;margin:14px 0}.item time,.item footer,.muted,.meta{color:#536a69;font-size:13px}.tag{background:#e2f0eb;color:#19534b}.summary{font-size:17px;line-height:1.85;color:#283d40}.photo{width:100%;max-height:410px;object-fit:contain;background:#f2f4f1;border-radius:6px}.item .more{display:inline-block;padding:10px 0;color:#18574f;font-weight:650}.item footer{border-top:1px solid #e2e8e5;margin-top:12px}.tabs button:focus-visible,a:focus-visible{outline:3px solid #a15d16}.pmcap{display:inline-flex;align-items:center;gap:6px;background:#eef6ff;border:1px solid #b8d4f0;color:#1e4a7a;border-radius:16px;padding:4px 10px;font-size:12px;margin:6px 0}.hnmeta{font-size:12px;color:#6b5b3e;margin:4px 0}.pulse-btn{margin-top:10px;border:1px solid #c5d4cf;background:#f4faf7;color:#19534b;border-radius:8px;padding:8px 12px;cursor:pointer;font:inherit}.pulse-drawer{margin-top:10px;padding:12px;border:1px solid #d7e2dd;border-radius:8px;background:#fafcfa;font-size:14px}.pulse-drawer h3{font-size:14px;margin:8px 0 4px}.pulse-drawer ul{margin:0;padding-left:18px}.pulse-drawer li{margin:4px 0}.pulse-loading{color:#64748b;font-size:13px}
 </style><main class="wrap"><h1>全球新闻中心</h1><p class="muted">各站重点新闻 · 每站最多五条 · 按北京时间倒序</p><div id="status" class="muted">正在连接…</div><section class="datebar"><button type="button" id="collect">手动采集最新新闻</button><b id="dateTitle">当天新闻</b><button id="prevDay">‹ 前一天</button><input id="datePicker" type="date" aria-label="选择日期"><button id="nextDay">后一天 ›</button></section><div id="dispatchState" role="status" class="muted"></div><nav class="tabs"><button class="active" data-cat="">全部</button><button data-cat="国际政治">国际政治</button><button data-cat="AI与科技">人工智能与科技</button><button data-cat="全球经济金融">全球经济金融</button><button data-cat="社会与突发">社会与突发</button><button data-cat="reports">采集记录</button></nav><section id="content"><div class="empty">加载中…</div></section></main><script>
 const box=document.querySelector('#content'),status=document.querySelector('#status'),picker=document.querySelector('#datePicker'),dateTitle=document.querySelector('#dateTitle'),prev=document.querySelector('#prevDay'),next=document.querySelector('#nextDay');let cat='',selectedDate=beijingToday();function beijingToday(){const p=new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).reduce((a,x)=>(a[x.type]=x.value,a),{});return p.year+'-'+p.month+'-'+p.day}function today(){return beijingToday()}function showDate(){dateTitle.textContent=selectedDate+'（北京时间）';picker.value=selectedDate;next.disabled=selectedDate>=today()}function shiftDate(n){const d=new Date(selectedDate+'T12:00:00Z');d.setUTCDate(d.getUTCDate()+n);selectedDate=d.toISOString().slice(0,10);showDate();load()}
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 let sequence=0;
 const formatter=new Intl.DateTimeFormat('zh-CN',{dateStyle:'long',timeStyle:'short',timeZone:'Asia/Shanghai'});
 function date(value){const d=new Date(value);return value && Number.isFinite(d.getTime())?formatter.format(d):'时间未知'}
+function safeHref(u){return /^https?:\/\//i.test(u||'')?u:''}
+function pulseCount(x){const c=x.community||{};return (c.hn?.length||0)+(c.reddit?.length||0)+(x.polymarket?1:0)}
+function renderPulse(data){
+ const parts=[];
+ if(data.polymarket){const p=data.polymarket,l=safeHref(p.url);parts.push('<h3>Polymarket 预测风向</h3><p>'+esc(p.event_title)+' · '+esc(p.outcome)+' '+esc(p.probability)+'%'+(p.volume_text?' · '+esc(p.volume_text):'')+(l?' <a target="_blank" rel="noopener noreferrer" href="'+esc(l)+'">查看盘口 ↗</a>':'')+'</p>');}
+ const c=data.community||{};
+ if(c.hn?.length){parts.push('<h3>Hacker News 社区讨论</h3><ul>'+c.hn.map(h=>{const d=safeHref(h.discussion_url);return '<li>'+esc(h.title)+(h.points!=null?' · '+esc(h.points)+'分':'')+(h.num_comments!=null?' · '+esc(h.num_comments)+'评':'')+(d?' <a target="_blank" rel="noopener noreferrer" href="'+esc(d)+'">讨论 ↗</a>':'')+(h.text?'<br><span class="muted">'+esc(h.text)+'</span>':'')+'</li>'}).join('')+'</ul>');}
+ else if(data.source_status?.hn==='unavailable')parts.push('<p class="muted">HN 讨论暂不可用（接口限流或超时）。</p>');
+ if(c.reddit?.length){parts.push('<h3>Reddit 社区热议</h3><ul>'+c.reddit.map(r=>{const u=safeHref(r.url);return '<li>r/'+esc(r.subreddit)+' · '+esc(r.title)+(r.score!=null?' · '+esc(r.score)+'赞':'')+(r.num_comments!=null?' · '+esc(r.num_comments)+'评':'')+(u?' <a target="_blank" rel="noopener noreferrer" href="'+esc(u)+'">帖子 ↗</a>':'')+'</li>'}).join('')+'</ul>');}
+ else if(data.source_status?.reddit==='unavailable')parts.push('<p class="muted">Reddit 讨论暂不可用。</p>');
+ return parts.join('')||'<p class="muted">暂无相关社区或市场脉络。</p>';
+}
+const pulseInflight=new Map();
+async function togglePulse(btn,fp){
+ const drawer=btn.nextElementSibling;
+ if(drawer.dataset.open==='1'){drawer.hidden=true;drawer.dataset.open='0';return;}
+ drawer.hidden=false;drawer.dataset.open='1';
+ if(drawer.dataset.loaded==='1')return;
+ if(pulseInflight.has(fp))return;
+ drawer.innerHTML='<p class="pulse-loading">正在加载社区与市场脉络…</p>';
+ pulseInflight.set(fp,true);
+ try{
+  const response=await fetch('/api/pulse?fingerprint='+encodeURIComponent(fp),{cache:'no-store'});
+  const data=await response.json();
+  if(!response.ok)throw Error(data.error||'failed');
+  drawer.innerHTML=renderPulse(data);
+  drawer.dataset.loaded='1';
+ }catch{drawer.innerHTML='<p class="muted">暂时无法加载脉络，请稍后重试。</p>';}
+ finally{pulseInflight.delete(fp);}
+}
 async function load(){
  const id=++sequence,report=cat==='reports';
  try{
@@ -123,8 +220,16 @@ async function load(){
    const image=x.image_url && x.image_url.startsWith('https://')?'<img class="photo" loading="lazy" referrerpolicy="no-referrer" alt="报道配图" src="'+esc(x.image_url)+'" onerror="this.hidden=true">':'';
    const text=x.reading_text||x.summary||'';
    const link=safe?'<a class="more" target="_blank" rel="noopener noreferrer" href="'+esc(x.url)+'">'+(text && !x.short_body?'更多 · 阅读原文':'查看原文')+' ↗</a>':'';
-   return '<article class="item"><header><span class="tag">'+esc(x.category==='AI与科技'?'人工智能与科技':x.category)+'</span><time>'+date(x.published_at||x.collected_at)+'</time></header><h2>'+title+'</h2>'+image+(text?'<p class="summary">'+esc(text)+'</p>':'<p class="muted">暂未取得原文内容，可打开来源网站查看。</p>')+'<footer><span>'+esc(x.source_name)+' · 待核实</span>'+link+'</footer></article>';
+   let meta='';
+   if(x.hn_meta)meta='<div class="hnmeta">Hacker News · '+esc(x.hn_meta.points)+'分 · '+esc(x.hn_meta.num_comments)+'评</div>';
+   else if(x.source_name==='Hacker News'&&x.hn_meta)meta='';
+   let pm='';
+   if(x.polymarket){const p=x.polymarket,u=safeHref(p.url);pm='<div class="pmcap">预测市场 · '+esc(p.outcome)+' '+esc(p.probability)+'% · '+esc(p.event_title||p.question||'')+(u?' <a target="_blank" rel="noopener noreferrer" href="'+esc(u)+'">↗</a>':'')+'</div>';}
+   const pc=pulseCount(x);
+   const pulse='<button type="button" class="pulse-btn" data-fp="'+esc(x.fingerprint)+'">社区与市场脉络'+(pc?' ('+pc+')':'')+'</button><div class="pulse-drawer" hidden></div>';
+   return '<article class="item"><header><span class="tag">'+esc(x.category==='AI与科技'?'人工智能与科技':x.category)+'</span><time>'+date(x.published_at||x.collected_at)+'</time></header><h2>'+title+'</h2>'+pm+meta+image+(text?'<p class="summary">'+esc(text)+'</p>':'<p class="muted">暂未取得原文内容，可打开来源网站查看。</p>')+pulse+'<footer><span>'+esc(x.source_name)+' · 待核实</span>'+link+'</footer></article>';
   }).join('')||'<div class="empty">暂无记录，等待下一轮采集。</div>';
+  box.querySelectorAll('.pulse-btn').forEach(b=>b.onclick=()=>togglePulse(b,b.dataset.fp));
  }catch{if(id===sequence){status.textContent='读取失败';box.innerHTML='<div class="empty">暂时无法读取数据，请稍后刷新。</div>'}}
 }
 const trigger=document.querySelector('#collect'),notice=document.querySelector('#dispatchState');
