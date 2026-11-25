@@ -1,0 +1,79 @@
+name: AI 任务合同
+description: 创建可独立验收的 AI 协作任务合同
+title: "[TASK] "
+labels: ["status:planning"]
+body:
+  - type: input
+    id: contract_version
+    attributes:
+      label: contract_version
+      description: 合同版本号
+      placeholder: "1"
+    validations:
+      required: true
+  - type: textarea
+    id: objective
+    attributes:
+      label: objective
+      description: 任务目标（可独立理解，禁止「按之前说的做」）
+    validations:
+      required: true
+  - type: textarea
+    id: scope_in
+    attributes:
+      label: scope_in
+    validations:
+      required: true
+  - type: textarea
+    id: scope_out
+    attributes:
+      label: scope_out
+    validations:
+      required: true
+  - type: input
+    id: base_commit
+    attributes:
+      label: base_commit
+    validations:
+      required: true
+  - type: textarea
+    id: allowed_paths
+    attributes:
+      label: allowed_paths
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: acceptance_criteria
+      description: 每条可指向具体行为或证据
+    validations:
+      required: true
+  - type: textarea
+    id: test_commands
+    attributes:
+      label: test_commands
+    validations:
+      required: true
+  - type: input
+    id: developer_binding
+    attributes:
+      label: developer binding
+      description: 例如 cursor-developer (composer-2.5)
+    validations:
+      required: true
+  - type: input
+    id: acceptor_binding
+    attributes:
+      label: acceptor binding
+      description: 例如 antigravity-acceptor
+    validations:
+      required: true
+  - type: input
+    id: limits
+    attributes:
+      label: limits
+      description: "max_revisions=2; timeout_min=60"
+      value: "max_revisions=2; max_developer_runs=3; max_acceptor_runs=3; timeout_min=60"
+    validations:
+      required: true

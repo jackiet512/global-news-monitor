@@ -1,0 +1,13 @@
+[
+  { "name": "status:planning", "color": "FBCA04", "description": "合同草稿" },
+  { "name": "status:ready", "color": "0E8A16", "description": "可派发" },
+  { "name": "status:in-dev", "color": "1D76DB", "description": "研发中" },
+  { "name": "status:in-review", "color": "5319E7", "description": "待/正在验收" },
+  { "name": "status:changes-requested", "color": "D93F0B", "description": "集中返修" },
+  { "name": "status:accepted", "color": "006B75", "description": "已验收" },
+  { "name": "status:blocked", "color": "B60205", "description": "阻塞" },
+  { "name": "status:needs-human", "color": "E99695", "description": "需人工" },
+  { "name": "needs-review", "color": "C5DEF5", "description": "请求验收" },
+  { "name": "rework:1", "color": "F9D0C4", "description": "返修计数 1" },
+  { "name": "rework:2", "color": "F9D0C4", "description": "返修计数 2" }
+]
