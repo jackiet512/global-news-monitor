@@ -1,4 +1,5 @@
 """Hacker News 热榜采集（Algolia 免密钥 API）。"""
+import hashlib
 import html
 import json
 import re
@@ -12,6 +13,7 @@ FRONT = "https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=35"
 STORY = "https://hn.algolia.com/api/v1/search?tags=story&numericFilters=created_at_i>{cutoff}&hitsPerPage=35"
 ITEM = "https://hn.algolia.com/api/v1/items/{oid}"
 DISCUSS = "https://news.ycombinator.com/item?id={oid}"
+BJ = timezone(timedelta(hours=8))
 
 
 def _get(url, timeout=12):
@@ -44,6 +46,17 @@ def _category(title_en, title_zh):
     return "AI与科技"
 
 
+def _bj_iso(stamp):
+    try:
+        text = (stamp or "").replace("Z", "+00:00")
+        dt = datetime.fromisoformat(text)
+    except (TypeError, ValueError):
+        dt = datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(BJ).isoformat()
+
+
 def _strip_html(text):
     if not text:
         return ""
@@ -64,6 +77,7 @@ def top_comments(oid, translate, limit=2, timeout=10):
     )
     out = []
     for node in ranked[:limit]:
+        author = (node.get("author") or "anonymous").strip()
         text = _strip_html(node.get("text") or "")
         if len(text) > 320:
             text = text[:300] + "…"
@@ -71,12 +85,25 @@ def top_comments(oid, translate, limit=2, timeout=10):
             text = translate(text)
         except (OSError, ValueError):
             pass
-        out.append({"text": text, "points": int(node.get("points") or 0)})
+        out.append({"author": author, "text": f"@{author}: {text}"})
     return out
 
 
+def _hn_community(hit, oid, title_zh, translate):
+    story = {
+        "title": title_zh,
+        "points": int(hit.get("points") or 0),
+        "num_comments": int(hit.get("num_comments") or 0),
+        "discussion_url": DISCUSS.format(oid=oid),
+        "url": (hit.get("url") or "").strip(),
+    }
+    comments = top_comments(oid, translate)
+    if comments:
+        story["comments"] = comments
+    return {"hn": [story]}
+
+
 def collect_hn(translate, chinese, limit=5, min_score=8):
-    """拉取 HN 热榜，最多返回 limit 条。"""
     hits = []
     try:
         data = _get(FRONT)
@@ -112,7 +139,7 @@ def collect_hn(translate, chinese, limit=5, min_score=8):
             title = chinese(original)
         except (OSError, ValueError):
             continue
-        stamp = hit.get("created_at") or datetime.now(timezone.utc).isoformat()
+        stamp = _bj_iso(hit.get("created_at"))
         cat = _category(original, title)
         hn_meta = {
             "object_id": oid,
@@ -120,14 +147,12 @@ def collect_hn(translate, chinese, limit=5, min_score=8):
             "num_comments": int(hit.get("num_comments") or 0),
             "discussion_url": DISCUSS.format(oid=oid),
         }
-        comments = top_comments(oid, translate)
-        community = {"hn": comments} if comments else {}
-        import hashlib
-
+        community = _hn_community(hit, oid, title, translate)
         items.append(
             dict(
                 title=title,
                 original_title=original,
+                en_title=original,
                 url=url,
                 source_name="Hacker News",
                 category=cat,

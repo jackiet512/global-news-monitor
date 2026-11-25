@@ -15,7 +15,7 @@ from headlines import publication_metadata
 from programme import channel, schedule
 from hackernews import collect_hn
 from polymarket import attach_polymarket
-from community import enrich_items
+from community import enrich_items, ensure_en_titles, to_english
 import feedparser
 from bs4 import BeautifulSoup
 
@@ -113,7 +113,8 @@ def collect(relevant):
             cat="社会与突发"
             for pattern,category in [("外交|总统|议会|大选|军队|战争|会谈|部长","国际政治"),("利率|股市|经济|财报|银行","全球经济金融"),("芯片|科技|人工智能|机器人|航天","AI与科技")]:
                 if re.search(pattern,title):cat=category;break
-            item=dict(title=title,url=link,source_name=name,category=cat,image_url=image,reading_text=summary,short_body=False,summary=summary,published_at=stamp,collected_at=datetime.now(BJ).isoformat(),verification_status="待核实",fingerprint=hashlib.sha256(link.encode()).hexdigest())
+            en_title=original if re.search(r"[a-z]{4,}", original.lower()) else (to_english(title) if re.search("[一-鿿]", title) else original)
+            item=dict(title=title,original_title=original,en_title=en_title,url=link,source_name=name,category=cat,image_url=image,reading_text=summary,short_body=False,summary=summary,published_at=stamp,collected_at=datetime.now(BJ).isoformat(),verification_status="待核实",fingerprint=hashlib.sha256(link.encode()).hexdigest())
             clue=incident_clues(item)
             if any(matching_incident(clue,old) for old in selected_clues):continue
             selected_clues.append(clue)
@@ -142,6 +143,7 @@ def collect(relevant):
     except Exception:
         errors.append(dict(source="Hacker News", error="HN 热榜采集异常"))
     enrich(items, SITES, read, chinese)
+    ensure_en_titles(items, read=read)
     try:
         attach_polymarket(items, translate=chinese)
     except Exception:

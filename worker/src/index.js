@@ -75,31 +75,39 @@ export default {
    const row=await env.DB.prepare("SELECT ni.title,ni.url,nc.polymarket_json,nc.community_json,nc.query_terms,nc.updated_at FROM news_items ni LEFT JOIN news_context nc ON nc.fingerprint=ni.fingerprint WHERE ni.fingerprint=?").bind(fp).first();
    if(!row)return json({error:"not_found"},404);
    const refresh=url.searchParams.get("refresh")==="1";
-   let polymarket=parseJsonField(row.polymarket_json),community=parseJsonField(row.community_json)||{hn:[],reddit:[]},queryTerms=parseJsonField(row.query_terms)||[];
+   let polymarket=parseJsonField(row.polymarket_json),communityRaw=parseJsonField(row.community_json)||{hn:[],reddit:[]},queryTerms=parseJsonField(row.query_terms)||[];
    const cachedAt=row.updated_at?Date.parse(row.updated_at):0;
    const fresh=cachedAt && Date.now()-cachedAt<30*60*1000;
-   const hasCommunity=community&&((community.hn&&community.hn.length)||(community.reddit&&community.reddit.length));
+   const cleanCommunity=cleanPulseCommunity(communityRaw);
+   const hasCommunity=cleanCommunity.hn.length||cleanCommunity.reddit.length;
    if(!refresh&&fresh&&hasCommunity){
-    return json({ok:true,fingerprint:fp,cached:true,polymarket,community,query_terms:queryTerms,source_status:{hn:community.hn?.length?"ok":"empty",reddit:community.reddit?.length?"ok":"empty",polymarket:polymarket?"ok":"empty"},updated_at:row.updated_at});
+    return json({ok:true,fingerprint:fp,cached:true,polymarket,community:cleanCommunity,query_terms:queryTerms,source_status:{hn:cleanCommunity.hn.length?"ok":"empty",reddit:cleanCommunity.reddit.length?"ok":"empty",polymarket:polymarket?"ok":"empty"},updated_at:row.updated_at});
    }
-   const q=Array.isArray(queryTerms)&&queryTerms.length?queryTerms.join(" "):extractTerms(row.title);
-   const [hnSettle,redditSettle,pmSettle]=await Promise.allSettled([fetchHn(q),fetchReddit(q),polymarket?Promise.resolve(null):fetchPolymarket()]);
-   const sourceStatus={hn:"unavailable",reddit:"unavailable",polymarket:polymarket?"ok":"unavailable"};
+   const q=(Array.isArray(queryTerms)&&queryTerms.length?queryTerms.join(" "):extractTerms(row.title)).trim();
+   const sourceStatus={hn:"empty",reddit:"empty",polymarket:polymarket?"ok":"empty"};
+   if(!q){
+    const updated=new Date().toISOString();
+    await env.DB.prepare("INSERT OR REPLACE INTO news_context (fingerprint,polymarket_json,community_json,query_terms,updated_at) VALUES (?,?,?,?,?)").bind(fp,safeJsonString(polymarket,8000),safeJsonString(communityRaw,16000),safeJsonString(queryTerms,2000),updated).run();
+    return json({ok:true,fingerprint:fp,cached:false,polymarket,community:cleanPulseCommunity(communityRaw),query_terms:queryTerms,source_status:sourceStatus,updated_at:updated});
+   }
+   const [hnSettle,redditSettle,pmSettle]=await Promise.allSettled([fetchHn(q),fetchReddit(q),polymarket?Promise.resolve(polymarket):fetchPolymarket(q)]);
    if(hnSettle.status==="fulfilled"){
     const hn=hnSettle.value;
-    sourceStatus.hn=hn?.length?"ok":"empty";
-    if(hn?.length) community={...community,hn:mergeDiscussions(community.hn,hn)};
-   }
+    sourceStatus.hn=hn===null?"unavailable":(hn.length?"ok":"empty");
+    if(hn?.length) communityRaw={...communityRaw,hn:mergeDiscussions(communityRaw.hn,hn)};
+   }else sourceStatus.hn="unavailable";
    if(redditSettle.status==="fulfilled"){
     const rd=redditSettle.value;
-    sourceStatus.reddit=rd?.length?"ok":"empty";
-    if(rd?.length) community={...community,reddit:rd};
-   }
-   if(!polymarket&&pmSettle.status==="fulfilled"&&pmSettle.value) polymarket=pmSettle.value;
-   if(polymarket) sourceStatus.polymarket="ok";
+    sourceStatus.reddit=rd===null?"unavailable":(rd.length?"ok":"empty");
+    if(rd?.length) communityRaw={...communityRaw,reddit:rd};
+   }else sourceStatus.reddit="unavailable";
+   if(!polymarket&&pmSettle.status==="fulfilled"){
+    polymarket=pmSettle.value;
+    sourceStatus.polymarket=polymarket?"ok":"empty";
+   }else if(!polymarket) sourceStatus.polymarket="unavailable";
    const updated=new Date().toISOString();
-   await env.DB.prepare("INSERT OR REPLACE INTO news_context (fingerprint,polymarket_json,community_json,query_terms,updated_at) VALUES (?,?,?,?,?)").bind(fp,safeJsonString(polymarket,8000),safeJsonString(community,16000),safeJsonString(queryTerms,2000),updated).run();
-   return json({ok:true,fingerprint:fp,cached:false,polymarket,community,query_terms:queryTerms,source_status:sourceStatus,updated_at:updated});
+   await env.DB.prepare("INSERT OR REPLACE INTO news_context (fingerprint,polymarket_json,community_json,query_terms,updated_at) VALUES (?,?,?,?,?)").bind(fp,safeJsonString(polymarket,8000),safeJsonString(communityRaw,16000),safeJsonString(queryTerms,2000),updated).run();
+   return json({ok:true,fingerprint:fp,cached:false,polymarket,community:cleanPulseCommunity(communityRaw),query_terms:queryTerms,source_status:sourceStatus,updated_at:updated});
   }
   if(url.pathname==="/api/collect" && request.method==="POST"){
    if(request.headers.get("Origin")!==url.origin)return json({error:"origin"},403);
@@ -150,8 +158,36 @@ function validDate(s){if(!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(s))return false;co
 function nextDate(s){const d=new Date(s+"T00:00:00Z");d.setUTCDate(d.getUTCDate()+1);return d.toISOString().slice(0,10)}
 function parseJsonField(raw){if(raw==null||raw==="")return null;try{return JSON.parse(raw)}catch{return null}}
 function safeJsonString(v,max){if(v==null)return null;try{const s=JSON.stringify(v);return s.length>max?null:s}catch{return null}}
-function extractTerms(title){return String(title||"").split(/[^a-zA-Z\u4e00-\u9fff]+/).filter(w=>w.length>2).slice(0,6)}
+function extractTerms(title){return String(title||"").split(/[^a-zA-Z\u4e00-\u9fff]+/).filter(w=>w.length>2).slice(0,6).join(" ")}
+function cleanPulseCommunity(c){const raw=c||{};return {hn:Array.isArray(raw.hn)?raw.hn:[],reddit:Array.isArray(raw.reddit)?raw.reddit:[]};}
 function mergeDiscussions(a,b){const out=[...(a||[])];for(const x of b||[]){if(!out.some(y=>y.discussion_url===x.discussion_url||y.title===x.title))out.push(x)}return out}
+const PM_STOP=new Set("will the and for with what when before after president market world global news says report china united states us ai model new year month from that this into over than have been were about their there which while during 2024 2025 2026 2027".split(" "));
+function pmTokens(t){return new Set(String(t||"").toLowerCase().match(/[a-z]{3,}/g)?.filter(w=>!PM_STOP.has(w))||[])}
+function parsePmList(v){if(v==null)return [];if(Array.isArray(v))return v;if(typeof v==="string"){try{const p=JSON.parse(v);return Array.isArray(p)?p:[]}catch{return []}}return []}
+function pmMarketProb(mk){
+ const outcomes=parsePmList(mk.outcomes),prices=parsePmList(mk.outcomePrices);
+ if(!outcomes.length||outcomes.length!==prices.length||mk.closed)return null;
+ const floats=prices.map(p=>+p);if(floats.every(v=>!v))return null;
+ const yi=outcomes.findIndex(o=>String(o).toLowerCase()==="yes");
+ if(yi>=0)return {outcome:"Yes",probability:Math.round(floats[yi]*100),question:String(mk.question||"")};
+ const bi=floats.indexOf(Math.max(...floats));
+ return {outcome:String(outcomes[bi]),probability:Math.round(floats[bi]*100),question:String(mk.question||"")};
+}
+function pmFmtVol(v){const n=+v||0;if(n>=1e6)return "$"+(n/1e6).toFixed(1)+"M";if(n>=1e3)return "$"+Math.round(n/1e3)+"K";return n>0?"$"+Math.round(n):""}
+function matchPmEvent(events,query){
+ const qt=pmTokens(query);if(qt.size<2)return null;
+ let best=null,bestScore=0;
+ for(const ev of events||[]){
+  const slug=ev.slug||"",vol=pmFmtVol(ev.volume||ev.volume24hr||0);
+  for(const mk of ev.markets||[]){
+   const prob=pmMarketProb(mk);if(!prob)continue;
+   const title=String(ev.title||""),et=pmTokens(title+" "+prob.question);
+   const shared=[...qt].filter(w=>et.has(w));if(shared.length<2)continue;
+   const score=shared.length;if(score>bestScore){bestScore=score;best={event_title:title,question:prob.question,outcome:prob.outcome,probability:prob.probability,volume_text:vol,url:slug?"https://polymarket.com/event/"+slug:""};}
+  }
+ }
+ return bestScore>=2?best:null;
+}
 async function fetchHn(query){
  const u="https://hn.algolia.com/api/v1/search?tags=story&hitsPerPage=5&query="+encodeURIComponent(query);
  const r=await fetch(u,{headers:{"User-Agent":"GlobalNewsMonitor/1.0"},signal:AbortSignal.timeout(5000)});
@@ -166,7 +202,12 @@ async function fetchReddit(query){
  const data=await r.json();
  return ((data.data||{}).children||[]).map(c=>{const p=c.data||{};return {subreddit:p.subreddit||"",title:p.title||"",score:+(p.score||0),num_comments:+(p.num_comments||0),url:p.permalink?"https://www.reddit.com"+p.permalink:""}});
 }
-async function fetchPolymarket(){return null}
+async function fetchPolymarket(query){
+ const r=await fetch("https://gamma-api.polymarket.com/events?active=true&closed=false&limit=80",{headers:{"User-Agent":"GlobalNewsMonitor/1.0"},signal:AbortSignal.timeout(5000)});
+ if(!r.ok)throw new Error("polymarket http "+r.status);
+ const events=await r.json();
+ return matchPmEvent(events,query);
+}
 const PAGE = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>全球新闻中心</title><style>
 body{margin:0;background:#f3f5f9;color:#172033;font:16px system-ui,"PingFang SC",sans-serif}.wrap{max-width:1000px;margin:auto;padding:24px 16px}h1{margin:0;font-size:26px}.muted,.meta{color:#64748b;font-size:13px}.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:20px 0}.tabs button{border:1px solid #d6deea;background:white;border-radius:18px;padding:8px 13px}.tabs .active{background:#234bb5;color:white}.item,.report,.empty{background:white;border:1px solid #e2e8f0;border-radius:12px;padding:16px;margin:10px 0}.item h2{font-size:18px;line-height:1.45;margin:8px 0}.item a{color:inherit;text-decoration:none}.item a:hover{text-decoration:underline}.summary{line-height:1.65;color:#334155;white-space:pre-wrap}.tag{background:#eef2ff;color:#3730a3;padding:3px 7px;border-radius:5px;font-size:12px}.empty{text-align:center;padding:40px;color:#64748b}@media(prefers-color-scheme:dark){body{background:#101827;color:#e5e7eb}.item,.report,.empty,.tabs button{background:#182235;color:#e5e7eb;border-color:#334155}.summary{color:#cbd5e1}.muted,.meta{color:#9ca3af}}
 .datebar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;background:white;border:1px solid #dce5df;border-radius:12px;padding:12px;margin:18px 0}.datebar input,.datebar button{font:inherit;border:1px solid #d5dfd9;border-radius:8px;background:white;color:#24443e;padding:9px;min-height:40px}.datebar button{cursor:pointer}.datebar b{margin-right:auto;color:#193f3b}@media(max-width:520px){.datebar{gap:6px}.datebar b{width:100%}.datebar button,.datebar input{flex:1;min-width:0}}:root{color-scheme:light}body{margin:0;background:#f7f6f2;color:#182c30;font-family:"PingFang SC","Microsoft YaHei",sans-serif}.wrap{max-width:760px;padding:36px 18px}.wrap>h1{font:700 clamp(32px,6vw,52px)/1.2 "Songti SC",serif;color:#183d3d}.tabs{position:sticky;top:0;z-index:2;background:#f7f6f2;overflow-x:auto;flex-wrap:nowrap;padding:12px 0;border-bottom:1px solid #bfcac5}.tabs button{flex:none;cursor:pointer;background:white;color:#294843;min-height:42px}.tabs .active{background:#19534b;color:white}.item,.report,.empty{background:white;color:#193139;padding:clamp(16px,4vw,32px);border-radius:12px}.item header,.item footer{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.item h2{font:700 clamp(19px,3vw,25px)/1.5 "Songti SC",serif;margin:14px 0}.item time,.item footer,.muted,.meta{color:#536a69;font-size:13px}.tag{background:#e2f0eb;color:#19534b}.summary{font-size:17px;line-height:1.85;color:#283d40}.photo{width:100%;max-height:410px;object-fit:contain;background:#f2f4f1;border-radius:6px}.item .more{display:inline-block;padding:10px 0;color:#18574f;font-weight:650}.item footer{border-top:1px solid #e2e8e5;margin-top:12px}.tabs button:focus-visible,a:focus-visible{outline:3px solid #a15d16}.pmcap{display:inline-flex;align-items:center;gap:6px;background:#eef6ff;border:1px solid #b8d4f0;color:#1e4a7a;border-radius:16px;padding:4px 10px;font-size:12px;margin:6px 0}.hnmeta{font-size:12px;color:#6b5b3e;margin:4px 0}.pulse-btn{margin-top:10px;border:1px solid #c5d4cf;background:#f4faf7;color:#19534b;border-radius:8px;padding:8px 12px;cursor:pointer;font:inherit}.pulse-drawer{margin-top:10px;padding:12px;border:1px solid #d7e2dd;border-radius:8px;background:#fafcfa;font-size:14px}.pulse-drawer h3{font-size:14px;margin:8px 0 4px}.pulse-drawer ul{margin:0;padding-left:18px}.pulse-drawer li{margin:4px 0}.pulse-loading{color:#64748b;font-size:13px}
@@ -182,7 +223,7 @@ function renderPulse(data){
  const parts=[];
  if(data.polymarket){const p=data.polymarket,l=safeHref(p.url);parts.push('<h3>Polymarket 预测风向</h3><p>'+esc(p.event_title)+' · '+esc(p.outcome)+' '+esc(p.probability)+'%'+(p.volume_text?' · '+esc(p.volume_text):'')+(l?' <a target="_blank" rel="noopener noreferrer" href="'+esc(l)+'">查看盘口 ↗</a>':'')+'</p>');}
  const c=data.community||{};
- if(c.hn?.length){parts.push('<h3>Hacker News 社区讨论</h3><ul>'+c.hn.map(h=>{const d=safeHref(h.discussion_url);return '<li>'+esc(h.title)+(h.points!=null?' · '+esc(h.points)+'分':'')+(h.num_comments!=null?' · '+esc(h.num_comments)+'评':'')+(d?' <a target="_blank" rel="noopener noreferrer" href="'+esc(d)+'">讨论 ↗</a>':'')+(h.text?'<br><span class="muted">'+esc(h.text)+'</span>':'')+'</li>'}).join('')+'</ul>');}
+ if(c.hn?.length){parts.push('<h3>Hacker News 社区讨论</h3><ul>'+c.hn.map(h=>{const d=safeHref(h.discussion_url);const label=h.title?esc(h.title):'讨论摘录';const pts=h.points>0?' · '+esc(h.points)+'分':'';const cm=h.num_comments>0?' · '+esc(h.num_comments)+'评':'';const comments=(h.comments||[]).map(x=>esc(x.text||x)).join('<br>');const body=comments||(h.text?esc(h.text):'');return '<li>'+label+pts+cm+(d?' <a target="_blank" rel="noopener noreferrer" href="'+esc(d)+'">讨论 ↗</a>':'')+(body?'<br><span class="muted">'+body+'</span>':'')+'</li>'}).join('')+'</ul>');}
  else if(data.source_status?.hn==='unavailable')parts.push('<p class="muted">HN 讨论暂不可用（接口限流或超时）。</p>');
  if(c.reddit?.length){parts.push('<h3>Reddit 社区热议</h3><ul>'+c.reddit.map(r=>{const u=safeHref(r.url);return '<li>r/'+esc(r.subreddit)+' · '+esc(r.title)+(r.score!=null?' · '+esc(r.score)+'赞':'')+(r.num_comments!=null?' · '+esc(r.num_comments)+'评':'')+(u?' <a target="_blank" rel="noopener noreferrer" href="'+esc(u)+'">帖子 ↗</a>':'')+'</li>'}).join('')+'</ul>');}
  else if(data.source_status?.reddit==='unavailable')parts.push('<p class="muted">Reddit 讨论暂不可用。</p>');

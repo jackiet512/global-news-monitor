@@ -5,6 +5,8 @@ import urllib.error
 import urllib.request
 from difflib import SequenceMatcher
 
+from community import to_english
+
 GAMMA = "https://gamma-api.polymarket.com/events?active=true&closed=false&limit=80"
 UA = "GlobalNewsMonitor/1.0"
 
@@ -68,13 +70,9 @@ def _market_prob(market):
         return None
     if market.get("closed"):
         return None
-    yn = None
     for i, name in enumerate(outcomes):
         if str(name).lower() == "yes":
-            yn = round(floats[i] * 100)
-            break
-    if yn is not None:
-        return {"outcome": "Yes", "probability": yn, "question": str(market.get("question") or "")}
+            return {"outcome": "Yes", "probability": round(floats[i] * 100), "question": str(market.get("question") or "")}
     best_i = max(range(len(floats)), key=lambda i: floats[i])
     return {
         "outcome": str(outcomes[best_i]),
@@ -95,6 +93,15 @@ def _tokens_zh(text):
     for seg in re.findall(r"[一-鿿]+", text or ""):
         grams.update(seg[i : i + 2] for i in range(len(seg) - 1))
     return {g for g in grams if g not in STOP_ZH}
+
+
+def _en_source(item):
+    en = item.get("en_title") or item.get("original_title") or ""
+    if len(_tokens_en(en)) < 2:
+        title = item.get("title") or en
+        if re.search("[一-鿿]", title):
+            en = to_english(title) or en
+    return en
 
 
 def fetch_events(timeout=10):
@@ -136,9 +143,9 @@ def match_polymarket(item, events=None, translate=None):
     if events is None:
         events = fetch_events()
     candidates = _event_candidates(events)
-    original = item.get("original_title") or item.get("title") or ""
+    en_source = _en_source(item)
     title = item.get("title") or ""
-    news_en = _tokens_en(original)
+    news_en = _tokens_en(en_source)
     news_zh = _tokens_zh(title)
     if len(news_en) < 2 and len(news_zh) < 2:
         return None
@@ -150,7 +157,7 @@ def match_polymarket(item, events=None, translate=None):
         if len(shared_en) < 2 and len(shared_zh) < 2:
             continue
         score = len(shared_en) + len(shared_zh) * 0.8
-        ratio = SequenceMatcher(None, original.lower(), c["event_title"].lower()).ratio()
+        ratio = SequenceMatcher(None, en_source.lower(), c["event_title"].lower()).ratio()
         score += ratio * 0.5
         if score > best_score:
             best_score = score
@@ -176,7 +183,6 @@ def match_polymarket(item, events=None, translate=None):
 
 
 def attach_polymarket(items, translate=None):
-    """批量为新闻条目挂载 polymarket 字段。"""
     events = fetch_events()
     for item in items:
         item["polymarket"] = match_polymarket(item, events=events, translate=translate)
