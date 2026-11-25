@@ -7,3 +7,4 @@
 | 2026-11-25 | 采用「采集期预关联入库 + Worker `/api/pulse` 按需查询带 D1 缓存」双通道承载社区与市场脉络 | 主列表首屏即可直接渲染 HN 热榜与 Polymarket 概率胶囊标签；用户点击任意新闻展开脉络时亦可实时补齐讨论且受缓存与失败隔离保护 | `docs/ai/tasks/TASK-001-hn-polymarket-community.md` |
 | 2026-11-25 | 所有建设与集成仅在隔离分支 `collab/hn-polymarket-community` 进行，不触碰 `main` 与线上部署 | 遵守不擅自 push、不合并主线、不部署生产环境的红线 | `docs/ai/STATUS.md` |
 | 2026-11-25 | 纯中文新闻源通过免密钥中译英缓存生成英文检索词（`en_title`），采集期社区预检索限制前 12 条并加超时取消兜底 | 解决中文标题无法直接命中英文 Polymarket 盘口与英文 HN/Reddit 讨论的问题，同时防止 GitHub Actions 并发限流或超时阻塞 | `docs/ai/reviews/TASK-001-acceptance.md` |
+| 2026-11-25 | 本仓库（`global-news-monitor`）开启「独立验收通过后自动合并 `main` 并推送 GitHub」授权 | 负责人明确书面指示「这个项目以后完成后同步发布 github」，仅适用于本仓库已通过独立验收的交付 | `AGENTS.md` |

@@ -52,4 +52,4 @@ node --check worker/src/index.js
 
 - 采集全流程须在 GitHub Actions 8 分钟超时内稳定完成；任一外部公开接口超时/限流（如 HTTP 429/403/5xx）须优雅降级，不得阻断主新闻采集入库。
 - 严禁硬编码或提交 `INGEST_TOKEN`、`GITHUB_ACTIONS_TOKEN` 等密钥。
-- 未经负责人书面授权，禁止 `git push`、合并到 `main`、执行 `npx wrangler deploy` 或直接写入远端生产 D1。
+- 本项目已获负责人书面授权（2026-11-25）：任务独立验收通过后自动合并 `main` 并 `git push` 同步发布至 GitHub；未通过独立验收前禁止合并主线或部署。
