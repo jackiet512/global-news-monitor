@@ -15,6 +15,7 @@ from headlines import publication_metadata
 from programme import channel, schedule
 from hackernews import collect_hn
 from polymarket import attach_polymarket
+from sports import is_sports_news
 from community import enrich_items, ensure_en_titles, to_english
 import feedparser
 from bs4 import BeautifulSoup
@@ -102,10 +103,12 @@ def collect(relevant):
         for title,link,summary,image,stamp in rows[:35]:
             if publication_metadata(title) or link in urls or channel(name,title,link):continue
             original=title
+            if is_sports_news(original_title=original, url=link):continue
             try:title=chinese(title)
             except (OSError,ValueError):continue
             key=re.sub(r"[^一-鿿a-z0-9]","",title.lower())
             if not key or publication_metadata(title) or not relevant(title) or duplicate(key,seen):continue
+            if is_sports_news(title=title, original_title=original, url=link, summary=summary):continue
             event=signals(original,title,stamp)
             if any(same_event(event,previous) for previous in events):continue
             try:summary="" if schedule(summary) else chinese(summary)

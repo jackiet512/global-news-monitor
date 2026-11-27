@@ -56,15 +56,15 @@ export default {
    }
    await env.DB.prepare("CREATE TABLE IF NOT EXISTS news_reading (fingerprint TEXT PRIMARY KEY,image_url TEXT,reading_text TEXT,short_body INTEGER)").run();
    await env.DB.prepare("CREATE TABLE IF NOT EXISTS news_context (fingerprint TEXT PRIMARY KEY,polymarket_json TEXT,community_json TEXT,query_terms TEXT,updated_at TEXT NOT NULL)").run();
-   const n=Math.min(Math.max((parseInt(url.searchParams.get("limit"),10)||100),1),200),c=url.searchParams.get("category");
+   const n=Math.min(Math.max((parseInt(url.searchParams.get("limit"),10)||100),1),200),c=url.searchParams.get("category"),fetchLimit=Math.min(n*2,200);
    const sql="SELECT ni.*,nr.image_url,nr.reading_text,nr.short_body,nc.polymarket_json,nc.community_json,nc.query_terms FROM news_items ni LEFT JOIN news_reading nr ON nr.fingerprint=ni.fingerprint LEFT JOIN news_context nc ON nc.fingerprint=ni.fingerprint WHERE julianday(COALESCE(ni.published_at,ni.collected_at))>=julianday(?) AND julianday(COALESCE(ni.published_at,ni.collected_at))<julianday(?)"+(c?" AND ni.category=?":"")+" ORDER BY julianday(COALESCE(ni.published_at,ni.collected_at)) DESC LIMIT ?";
-   const q=env.DB.prepare(sql),r=c?await q.bind(from,to,c,n).all():await q.bind(from,to,n).all();
+   const q=env.DB.prepare(sql),r=c?await q.bind(from,to,c,fetchLimit).all():await q.bind(from,to,fetchLimit).all();
    const items=(r.results||[]).map(row=>{
     const community=parseJsonField(row.community_json)||{};
     const hn_meta=community.hn_meta||null;
     const cleanCommunity={hn:community.hn||[],reddit:community.reddit||[]};
     return {...row,polymarket:parseJsonField(row.polymarket_json),community:cleanCommunity,hn_meta,query_terms:parseJsonField(row.query_terms),polymarket_json:undefined,community_json:undefined};
-   });
+   }).filter(row=>!isSportsItem(row)).slice(0,n);
    return json({date:selected,items});
   }
   if(url.pathname==="/api/pulse"){
@@ -150,6 +150,20 @@ async function runGitHubScheduleFallback(env){
   if(dispatch.status!==204)throw new Error("workflow dispatch HTTP "+dispatch.status+" "+(await dispatch.text()).slice(0,300));
   console.log("schedule-fallback: dispatched collector because latest run was stale",JSON.stringify({previous_run_id:latest?.id||null,age_minutes:Number.isFinite(age)?Math.round(age/60000):null}));
  }catch(error){console.error("schedule-fallback failed",String(error))}
+}
+const SPORTS_EMERGENCY_ZH=/伤亡|遇难|踩踏|枪击|爆炸|恐袭|地震|预警|疏散|应急响应/;
+const SPORTS_EMERGENCY_EN=/\b(casualties|stampede|shooting|explosion|terror|evacuat)\w*\b/i;
+const SPORTS_PATH=/\/(?:sports?|football|soccer|nba|nfl|mlb|nhl|cricket|rugby|tennis|golf|f1|formula1|olympics|athletics|boxing|ufc|mma|baseball|basketball)(?:\/|$)/i;
+const SPORTS_EN=/\b(?:nba|nfl|mlb|nhl|wnba|ncaa|fifa|uefa|premier league|champions league|la liga|serie a|bundesliga|super bowl|world cup|wimbledon|grand prix|formula 1|f1|ufc|mma|boxing|cricket|rugby|tennis|baseball|basketball|badminton|table tennis|golf|pga|nascar|motogp|marathon|playoffs|quarterback|touchdown|home run|goalkeeper|hat-trick|red card|penalty kick|transfer window|esports)\b/i;
+const SPORTS_ZH=/英超|欧冠|西甲|意甲|德甲|法甲|中超|CBA|NBA|NFL|MLB|NHL|UFC|F1|WTA|ATP|世预赛|世界杯|欧洲杯|美洲杯|亚洲杯|亚冠|大满贯|温网|法网|美网|澳网|冬奥会|奥运会|亚运会|全运会|超级碗|季后赛|总决赛|常规赛|全明星赛|男足|女足|男篮|女篮|男排|女排|国足|国乒|国羽|足球|篮球|网球|排球|乒乓球|羽毛球|棒球|橄榄球|高尔夫|台球|斯诺克|拳击|田径|马拉松|花样滑冰|短道速滑|跳水|体操|电竞|球星|球员|门将|前锋|后卫|主帅|主教练|转会|绝杀|点球|红牌|黄牌|加时赛|三分球|扣篮|篮板|助攻|帽子戏法|卫冕冠军|晋级八强|晋级四强|晋级决赛/;
+function isSportsItem(row){
+ const text=[row.title||"",row.summary||""].filter(Boolean).join(" ");
+ if(SPORTS_EMERGENCY_ZH.test(text)||SPORTS_EMERGENCY_EN.test(text))return false;
+ let path="";
+ try{path=new URL(row.url||"").pathname.toLowerCase()}catch{}
+ if(SPORTS_PATH.test(path))return true;
+ if(SPORTS_EN.test(text)||SPORTS_ZH.test(text))return true;
+ return false;
 }
 function cors(){return {"access-control-allow-origin":"*","access-control-allow-methods":"GET,POST,OPTIONS","access-control-allow-headers":"Authorization,Content-Type"}}
 function json(v,s=200){return new Response(JSON.stringify(v),{status:s,headers:{...cors(),"content-type":"application/json; charset=utf-8","cache-control":"no-store"}})}

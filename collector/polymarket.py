@@ -6,6 +6,7 @@ import urllib.request
 from difflib import SequenceMatcher
 
 from community import to_english
+from sports import is_sports_news
 
 GAMMA = "https://gamma-api.polymarket.com/events?active=true&closed=false&limit=80"
 UA = "GlobalNewsMonitor/1.0"
@@ -122,6 +123,9 @@ def _event_candidates(events):
             prob = _market_prob(mk)
             if not prob:
                 continue
+            pm_url = f"https://polymarket.com/event/{slug}" if slug else ""
+            if is_sports_news(original_title=title + " " + prob["question"], url=pm_url):
+                continue
             out.append(
                 {
                     "slug": slug,
@@ -130,7 +134,7 @@ def _event_candidates(events):
                     "outcome": prob["outcome"],
                     "probability": prob["probability"],
                     "volume_text": vol_text,
-                    "url": f"https://polymarket.com/event/{slug}" if slug else "",
+                    "url": pm_url,
                     "tokens_en": _tokens_en(title + " " + prob["question"]),
                     "tokens_zh": _tokens_zh(title),
                 }

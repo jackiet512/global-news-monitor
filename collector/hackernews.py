@@ -8,6 +8,8 @@ import urllib.request
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse
 
+from sports import is_sports_news
+
 UA = "GlobalNewsMonitor/1.0"
 FRONT = "https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=35"
 STORY = "https://hn.algolia.com/api/v1/search?tags=story&numericFilters=created_at_i>{cutoff}&hitsPerPage=35"
@@ -134,6 +136,8 @@ def collect_hn(translate, chinese, limit=5, min_score=8):
             continue
         original = (hit.get("title") or hit.get("story_title") or "").strip()
         if not original:
+            continue
+        if is_sports_news(original_title=original, url=url):
             continue
         try:
             title = chinese(original)

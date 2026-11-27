@@ -130,6 +130,62 @@ for (const n of ['社区与市场脉络', 'pmcap', '/api/pulse', '讨论摘录']
 console.log('OK');
 """
 
+SPORTS_FILTER_SCRIPT = """
+import { pathToFileURL } from 'url';
+import { readFileSync } from 'fs';
+
+const ROOT = process.argv[2];
+const { DatabaseSync } = await import('node:sqlite');
+const raw = new DatabaseSync(':memory:');
+raw.exec(readFileSync(ROOT + '/migrations/0001_init.sql', 'utf8'));
+
+class Stmt {
+  constructor(db, sql){ this.db = db; this.sql = sql; this.bound = []; }
+  bind(...a){ this.bound = a; return this; }
+  run(){ this.db.prepare(this.sql).run(...this.bound); return { meta: { changes: 1 } }; }
+  all(){ return { results: this.db.prepare(this.sql).all(...this.bound) }; }
+  first(){ return this.db.prepare(this.sql).get(...this.bound) || null; }
+}
+
+class MemDB {
+  constructor(db){ this.db = db; }
+  prepare(sql){ return new Stmt(this.db, sql); }
+  async batch(stmts){ for (const s of stmts) s.run(); return []; }
+  async run(stmt){ return stmt.run(); }
+  async all(stmt){ return stmt.all(); }
+  async first(stmt){ return stmt.first(); }
+}
+
+const mod = await import(pathToFileURL(ROOT + '/worker/src/index.js').href);
+const handler = mod.default;
+const env = { DB: new MemDB(raw) };
+
+const fpPol = 'd'.repeat(64);
+const fpSport = 'e'.repeat(64);
+raw.prepare('INSERT INTO news_items (fingerprint,source_name,category,title,url,summary,published_at,collected_at,verification_status) VALUES (?,?,?,?,?,?,?,?,?)').run(
+  fpPol, '路透社', '国际政治', '联合国安理会讨论中东局势', 'https://reuters.com/world/mideast', '', '2026-01-01T10:00:00+08:00', '2026-01-01T10:00:00+08:00', '待核实'
+);
+raw.prepare('INSERT INTO news_items (fingerprint,source_name,category,title,url,summary,published_at,collected_at,verification_status) VALUES (?,?,?,?,?,?,?,?,?)').run(
+  fpSport, '英国广播公司', '社会与突发', '英超争冠最新积分榜', 'https://www.bbc.com/sport/football/table', '', '2026-01-01T09:00:00+08:00', '2026-01-01T09:00:00+08:00', '待核实'
+);
+
+const news = await handler.fetch(new Request('http://x/api/news?date=2026-01-01'), env);
+const data = await news.json();
+if (!data.items || data.items.length !== 1) throw new Error('expected 1 item after sports filter, got ' + (data.items?.length ?? 0));
+if (data.items[0].fingerprint !== fpPol) throw new Error('wrong item returned');
+if (data.items.some(x => x.fingerprint === fpSport)) throw new Error('sports item not filtered');
+
+const fpEmerg = 'f'.repeat(64);
+raw.prepare('INSERT INTO news_items (fingerprint,source_name,category,title,url,summary,published_at,collected_at,verification_status) VALUES (?,?,?,?,?,?,?,?,?)').run(
+  fpEmerg, '路透社', '社会与突发', '足球场踩踏事件致多人伤亡', 'https://reuters.com/world/stadium-stampede', '', '2026-01-01T11:00:00+08:00', '2026-01-01T11:00:00+08:00', '待核实'
+);
+const news2 = await handler.fetch(new Request('http://x/api/news?date=2026-01-01'), env);
+const data2 = await news2.json();
+if (!data2.items.some(x => x.fingerprint === fpEmerg)) throw new Error('emergency exempt item filtered');
+
+console.log('OK');
+"""
+
 INLINE_SCRIPT_GATE = """
 import { pathToFileURL } from 'url';
 import vm from 'vm';
@@ -224,6 +280,16 @@ class WorkerPulseTests(unittest.TestCase):
     def test_inline_script_vm_gate(self):
         script = ROOT / "tests" / "_inline_script_gate.mjs"
         script.write_text(INLINE_SCRIPT_GATE, encoding="utf-8")
+        try:
+            r = subprocess.run(["node", str(script), str(ROOT)], capture_output=True, text=True, cwd=str(ROOT), timeout=30)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("OK", r.stdout)
+        finally:
+            script.unlink(missing_ok=True)
+
+    def test_api_news_filters_sports(self):
+        script = ROOT / "tests" / "_sports_filter.mjs"
+        script.write_text(SPORTS_FILTER_SCRIPT, encoding="utf-8")
         try:
             r = subprocess.run(["node", str(script), str(ROOT)], capture_output=True, text=True, cwd=str(ROOT), timeout=30)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
