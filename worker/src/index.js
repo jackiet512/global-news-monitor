@@ -217,7 +217,7 @@ function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 let sequence=0;
 const formatter=new Intl.DateTimeFormat('zh-CN',{dateStyle:'long',timeStyle:'short',timeZone:'Asia/Shanghai'});
 function date(value){const d=new Date(value);return value && Number.isFinite(d.getTime())?formatter.format(d):'时间未知'}
-function safeHref(u){return /^https?:\/\//i.test(u||'')?u:''}
+function safeHref(u){return new RegExp('^https?://','i').test(u||'')?u:''}
 function pulseCount(x){const c=x.community||{};return (c.hn?.length||0)+(c.reddit?.length||0)+(x.polymarket?1:0)}
 function renderPulse(data){
  const parts=[];

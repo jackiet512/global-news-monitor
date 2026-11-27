@@ -130,6 +130,74 @@ for (const n of ['社区与市场脉络', 'pmcap', '/api/pulse', '讨论摘录']
 console.log('OK');
 """
 
+INLINE_SCRIPT_GATE = """
+import { pathToFileURL } from 'url';
+import vm from 'vm';
+
+const ROOT = process.argv[2];
+const mod = await import(pathToFileURL(ROOT + '/worker/src/index.js').href);
+const handler = mod.default;
+
+function extractScript(html) {
+  const m = html.match(/<script>([\\s\\S]*?)<\\/script>/);
+  if (!m) throw new Error('no inline script');
+  return m[1];
+}
+
+function assertParses(code, label) {
+  try {
+    new vm.Script(code);
+  } catch (e) {
+    throw new Error(label + ': ' + e.message);
+  }
+}
+
+const memEnv = { DB: null };
+
+const withTok = { ...memEnv, GITHUB_ACTIONS_TOKEN: 'tok' };
+const htmlTok = await (await handler.fetch(new Request('http://x/'), withTok)).text();
+const codeTok = extractScript(htmlTok);
+assertParses(codeTok, 'with token');
+
+const noTok = { ...memEnv, GITHUB_ACTIONS_TOKEN: '' };
+const htmlNo = await (await handler.fetch(new Request('http://x/'), noTok)).text();
+const codeNo = extractScript(htmlNo);
+assertParses(codeNo, 'without token');
+
+function fnBlock(code) {
+  const start = code.indexOf('function esc');
+  const end = code.indexOf('const pulseInflight');
+  if (start < 0 || end < 0) throw new Error('cannot isolate front-end helpers');
+  return code.slice(start, end);
+}
+
+const ctx = {};
+vm.createContext(ctx);
+vm.runInContext(fnBlock(codeTok), ctx);
+
+const hrefCases = [
+  ['https://polymarket.com/event/x', 'https://polymarket.com/event/x'],
+  ['http://example.com/a', 'http://example.com/a'],
+  ['javascript:alert(1)', ''],
+  ['https:evil', ''],
+  ['', ''],
+];
+for (const [input, expected] of hrefCases) {
+  const got = vm.runInContext('safeHref(' + JSON.stringify(input) + ')', ctx);
+  if (got !== expected) throw new Error('safeHref(' + JSON.stringify(input) + ') => ' + JSON.stringify(got) + ', want ' + JSON.stringify(expected));
+}
+
+const pulse = vm.runInContext(
+  "renderPulse({polymarket:{event_title:'<script>alert(1)</script>',outcome:'Yes',probability:50,url:'javascript:alert(1)'},community:{}})",
+  ctx
+);
+if (pulse.includes('<script>alert(1)</script>')) throw new Error('renderPulse XSS: script tag not escaped');
+if (pulse.includes('javascript:')) throw new Error('renderPulse XSS: javascript link leaked');
+if (!pulse.includes('&lt;script&gt;')) throw new Error('renderPulse: expected escaped script in output');
+
+console.log('OK');
+"""
+
 
 class WorkerPulseTests(unittest.TestCase):
     def test_node_syntax(self):
@@ -146,6 +214,16 @@ class WorkerPulseTests(unittest.TestCase):
     def test_worker_runtime(self):
         script = ROOT / "tests" / "_worker_runtime.mjs"
         script.write_text(RUNTIME_SCRIPT, encoding="utf-8")
+        try:
+            r = subprocess.run(["node", str(script), str(ROOT)], capture_output=True, text=True, cwd=str(ROOT), timeout=30)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("OK", r.stdout)
+        finally:
+            script.unlink(missing_ok=True)
+
+    def test_inline_script_vm_gate(self):
+        script = ROOT / "tests" / "_inline_script_gate.mjs"
+        script.write_text(INLINE_SCRIPT_GATE, encoding="utf-8")
         try:
             r = subprocess.run(["node", str(script), str(ROOT)], capture_output=True, text=True, cwd=str(ROOT), timeout=30)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
