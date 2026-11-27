@@ -254,6 +254,92 @@ if (!pulse.includes('&lt;script&gt;')) throw new Error('renderPulse: expected es
 console.log('OK');
 """
 
+CLUSTER_SCRIPT = """
+import { pathToFileURL } from 'url';
+import vm from 'vm';
+import { readFileSync } from 'fs';
+
+const ROOT = process.argv[2];
+const { DatabaseSync } = await import('node:sqlite');
+const raw = new DatabaseSync(':memory:');
+raw.exec(readFileSync(ROOT + '/migrations/0001_init.sql', 'utf8'));
+raw.exec(readFileSync(ROOT + '/migrations/0002_context.sql', 'utf8'));
+
+class Stmt {
+  constructor(db, sql){ this.db = db; this.sql = sql; this.bound = []; }
+  bind(...a){ this.bound = a; return this; }
+  run(){ this.db.prepare(this.sql).run(...this.bound); return { meta: { changes: 1 } }; }
+  all(){ return { results: this.db.prepare(this.sql).all(...this.bound) }; }
+  first(){ return this.db.prepare(this.sql).get(...this.bound) || null; }
+}
+
+class MemDB {
+  constructor(db){ this.db = db; }
+  prepare(sql){ return new Stmt(this.db, sql); }
+  async batch(stmts){ for (const s of stmts) s.run(); return []; }
+  async run(stmt){ return stmt.run(); }
+  async all(stmt){ return stmt.all(); }
+  async first(stmt){ return stmt.first(); }
+}
+
+const mod = await import(pathToFileURL(ROOT + '/worker/src/index.js').href);
+const handler = mod.default;
+const env = { DB: new MemDB(raw) };
+raw.exec('CREATE TABLE IF NOT EXISTS news_reading (fingerprint TEXT PRIMARY KEY,image_url TEXT,reading_text TEXT,short_body INTEGER)');
+raw.exec('CREATE TABLE IF NOT EXISTS news_context (fingerprint TEXT PRIMARY KEY,polymarket_json TEXT,community_json TEXT,query_terms TEXT,updated_at TEXT NOT NULL)');
+
+const day = '2026-11-25T10:00:00+08:00';
+const items = [
+  { fp: '1'.repeat(64), src: '路透社', title: '感恩节大风暴给美国带来洪水和航班延误', url: 'https://reuters.com/storm-a', cat: '社会与突发',
+    pm: { event_title: 'Storm', question: 'Q', outcome: 'Yes', probability: 55, url: 'https://polymarket.com/event/storm' }, img: 'https://cdn.example.com/storm.jpg', body: 'Reuters longer body text about flooding and delays across the US.' },
+  { fp: '2'.repeat(64), src: '美联社', title: '强大的感恩节风暴导致洪水、停电', url: 'https://apnews.com/storm-b', cat: '社会与突发', pm: null, img: '', body: 'Short AP note.' },
+  { fp: '3'.repeat(64), src: '彭博社', title: '两名意大利人在科威特袭击中丧生，伊朗否认对此负责', url: 'https://bloomberg.com/kuwait-a', cat: '国际政治', pm: null, img: '', body: 'Bloomberg Kuwait attack lead.' },
+  { fp: '4'.repeat(64), src: '路透社', title: '伊朗被指控在科威特发动无人机袭击，造成两名意大利人死亡', url: 'https://reuters.com/kuwait-b', cat: '国际政治', pm: null, img: 'https://cdn.example.com/kuwait.jpg', body: '' },
+  { fp: '5'.repeat(64), src: '法新社', title: '两名意大利人在科威特袭击事件中丧生，伊朗否认参与', url: 'https://afp.com/kuwait-c', cat: '国际政治', pm: null, img: '', body: 'AFP duplicate angle.' },
+  { fp: '6'.repeat(64), src: '华尔街日报', title: 'OpenAI发布新一代推理模型', url: 'https://wsj.com/openai', cat: 'AI与科技', pm: null, img: '', body: '' },
+  { fp: '7'.repeat(64), src: '纽约时报', title: '美联储宣布维持利率不变', url: 'https://nytimes.com/fed', cat: '全球经济金融', pm: null, img: '', body: '' },
+];
+
+for (const x of items) {
+  raw.prepare('INSERT INTO news_items (fingerprint,source_name,category,title,url,summary,published_at,collected_at,verification_status) VALUES (?,?,?,?,?,?,?,?,?)').run(
+    x.fp, x.src, x.cat, x.title, x.url, x.body, day, day, '待核实'
+  );
+  if (x.img || x.body) raw.prepare('INSERT INTO news_reading (fingerprint,image_url,reading_text,short_body) VALUES (?,?,?,?)').run(x.fp, x.img || '', x.body || '', 0);
+  if (x.pm) raw.prepare('INSERT INTO news_context (fingerprint,polymarket_json,community_json,query_terms,updated_at) VALUES (?,?,?,?,?)').run(
+    x.fp, JSON.stringify(x.pm), JSON.stringify({ hn: [{ title: 'HN ' + x.src, points: 1, num_comments: 1, discussion_url: 'https://news.ycombinator.com/item?id=' + x.fp.slice(0,2) }], reddit: [] }), '[]', day
+  );
+}
+
+const news = await handler.fetch(new Request('http://x/api/news?date=2026-11-25&limit=20'), env);
+const data = await news.json();
+if (!data.items || data.items.length !== 4) throw new Error('expected 4 clustered cards, got ' + (data.items?.length ?? 0));
+
+const storm = data.items.find(x => x.title.includes('感恩节'));
+const kuwait = data.items.find(x => x.title.includes('科威特') || x.title.includes('意大利'));
+const openai = data.items.find(x => x.title.includes('OpenAI'));
+const fed = data.items.find(x => x.title.includes('美联储'));
+if (!storm || !kuwait || !openai || !fed) throw new Error('missing expected topic cards');
+
+if (storm.source_count !== 2 || storm.related_sources?.length !== 1) throw new Error('storm cluster wrong: ' + JSON.stringify({ source_count: storm.source_count, rel: storm.related_sources?.length }));
+if (!storm.polymarket || !storm.image_url) throw new Error('storm missing inherited polymarket/image_url');
+if (storm.related_sources[0].source_name !== '美联社') throw new Error('storm related source wrong');
+
+if (kuwait.source_count !== 3 || kuwait.related_sources?.length !== 2) throw new Error('kuwait cluster wrong');
+if (!kuwait.image_url) throw new Error('kuwait missing inherited image_url');
+
+if (openai.related_sources?.length || fed.related_sources?.length) throw new Error('unrelated items should not cluster');
+
+const page = await handler.fetch(new Request('http://x/'), env);
+const html = await page.text();
+for (const n of ['related-sources', '同题报道', '多源报道']) if (!html.includes(n)) throw new Error('page missing ' + n);
+
+const m = html.match(/<script>([\\s\\S]*?)<\\/script>/);
+if (!m) throw new Error('no inline script');
+new vm.Script(m[1]);
+
+console.log('OK');
+"""
+
 
 class WorkerPulseTests(unittest.TestCase):
     def test_node_syntax(self):
@@ -290,6 +376,16 @@ class WorkerPulseTests(unittest.TestCase):
     def test_api_news_filters_sports(self):
         script = ROOT / "tests" / "_sports_filter.mjs"
         script.write_text(SPORTS_FILTER_SCRIPT, encoding="utf-8")
+        try:
+            r = subprocess.run(["node", str(script), str(ROOT)], capture_output=True, text=True, cwd=str(ROOT), timeout=30)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("OK", r.stdout)
+        finally:
+            script.unlink(missing_ok=True)
+
+    def test_api_news_clusters_same_event(self):
+        script = ROOT / "tests" / "_cluster_news.mjs"
+        script.write_text(CLUSTER_SCRIPT, encoding="utf-8")
         try:
             r = subprocess.run(["node", str(script), str(ROOT)], capture_output=True, text=True, cwd=str(ROOT), timeout=30)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)

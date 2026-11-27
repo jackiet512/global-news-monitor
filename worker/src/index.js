@@ -56,7 +56,7 @@ export default {
    }
    await env.DB.prepare("CREATE TABLE IF NOT EXISTS news_reading (fingerprint TEXT PRIMARY KEY,image_url TEXT,reading_text TEXT,short_body INTEGER)").run();
    await env.DB.prepare("CREATE TABLE IF NOT EXISTS news_context (fingerprint TEXT PRIMARY KEY,polymarket_json TEXT,community_json TEXT,query_terms TEXT,updated_at TEXT NOT NULL)").run();
-   const n=Math.min(Math.max((parseInt(url.searchParams.get("limit"),10)||100),1),200),c=url.searchParams.get("category"),fetchLimit=Math.min(n*2,200);
+   const n=Math.min(Math.max((parseInt(url.searchParams.get("limit"),10)||100),1),200),c=url.searchParams.get("category"),fetchLimit=Math.min(Math.max(n*3,120),250);
    const sql="SELECT ni.*,nr.image_url,nr.reading_text,nr.short_body,nc.polymarket_json,nc.community_json,nc.query_terms FROM news_items ni LEFT JOIN news_reading nr ON nr.fingerprint=ni.fingerprint LEFT JOIN news_context nc ON nc.fingerprint=ni.fingerprint WHERE julianday(COALESCE(ni.published_at,ni.collected_at))>=julianday(?) AND julianday(COALESCE(ni.published_at,ni.collected_at))<julianday(?)"+(c?" AND ni.category=?":"")+" ORDER BY julianday(COALESCE(ni.published_at,ni.collected_at)) DESC LIMIT ?";
    const q=env.DB.prepare(sql),r=c?await q.bind(from,to,c,fetchLimit).all():await q.bind(from,to,fetchLimit).all();
    const items=(r.results||[]).map(row=>{
@@ -64,8 +64,9 @@ export default {
     const hn_meta=community.hn_meta||null;
     const cleanCommunity={hn:community.hn||[],reddit:community.reddit||[]};
     return {...row,polymarket:parseJsonField(row.polymarket_json),community:cleanCommunity,hn_meta,query_terms:parseJsonField(row.query_terms),polymarket_json:undefined,community_json:undefined};
-   }).filter(row=>!isSportsItem(row)).slice(0,n);
-   return json({date:selected,items});
+   }).filter(row=>!isSportsItem(row));
+   const clustered=clusterNewsItems(items).slice(0,n);
+   return json({date:selected,items:clustered});
   }
   if(url.pathname==="/api/pulse"){
    if(!env.DB)return json({error:"database_not_configured"},503);
@@ -156,6 +157,112 @@ const SPORTS_EMERGENCY_EN=/\b(casualties|stampede|shooting|explosion|terror|evac
 const SPORTS_PATH=/\/(?:sports?|football|soccer|nba|nfl|mlb|nhl|cricket|rugby|tennis|golf|f1|formula1|olympics|athletics|boxing|ufc|mma|baseball|basketball)(?:\/|$)/i;
 const SPORTS_EN=/\b(?:nba|nfl|mlb|nhl|wnba|ncaa|fifa|uefa|premier league|champions league|la liga|serie a|bundesliga|super bowl|world cup|wimbledon|grand prix|formula 1|f1|ufc|mma|boxing|cricket|rugby|tennis|baseball|basketball|badminton|table tennis|golf|pga|nascar|motogp|marathon|playoffs|quarterback|touchdown|home run|goalkeeper|hat-trick|red card|penalty kick|transfer window|esports)\b/i;
 const SPORTS_ZH=/英超|欧冠|西甲|意甲|德甲|法甲|中超|CBA|NBA|NFL|MLB|NHL|UFC|F1|WTA|ATP|世预赛|世界杯|欧洲杯|美洲杯|亚洲杯|亚冠|大满贯|温网|法网|美网|澳网|冬奥会|奥运会|亚运会|全运会|超级碗|季后赛|总决赛|常规赛|全明星赛|男足|女足|男篮|女篮|男排|女排|国足|国乒|国羽|足球|篮球|网球|排球|乒乓球|羽毛球|棒球|橄榄球|高尔夫|台球|斯诺克|拳击|田径|马拉松|花样滑冰|短道速滑|跳水|体操|电竞|球星|球员|门将|前锋|后卫|主帅|主教练|转会|绝杀|点球|红牌|黄牌|加时赛|三分球|扣篮|篮板|助攻|帽子戏法|卫冕冠军|晋级八强|晋级四强|晋级决赛/;
+const EVENT_ALIASES={"丧生":["死亡","身亡","遇难","致死","毙命"],"风暴":["大风暴","暴风雨","强风暴"],"导致":["带来","造成","引发","致使"],"袭击":["袭击事件","空袭","无人机袭击"],"否认":["驳斥","拒绝承认"],"指控":["指责","控告"]};
+const ZH_EVENT_STOP=new Set("的在中给被对此和与、，了将称表示强大".split(""));
+const CONFLICT_ENTITY_GROUPS=[["法国","意大利","日本","德国","英国","爱尔兰","加拿大","美国","科威特","伊朗","中国","俄罗斯","乌克兰","以色列"],["OpenAI","Anthropic","谷歌","微软","苹果","亚马逊"],["美联储","欧洲央行","日本央行","英国央行"]];
+function normalizeEventTitle(title){
+ let norm=String(title||"");
+ for(const [standard,aliases] of Object.entries(EVENT_ALIASES)){
+  for(const alias of [...aliases].sort((a,b)=>b.length-a.length)) norm=norm.split(alias).join(standard);
+ }
+ return norm;
+}
+function zhEventBigrams(text){
+ const grams=new Set();
+ for(const part of String(text||"").match(/[\u4e00-\u9fff]+/g)||[]){
+  const clean=[...part].filter(c=>!ZH_EVENT_STOP.has(c)).join("");
+  for(let i=0;i<clean.length-1;i++) grams.add(clean.slice(i,i+2));
+ }
+ return grams;
+}
+function eventEntities(text){
+ const found=[];
+ for(const group of CONFLICT_ENTITY_GROUPS){
+  for(const entity of group) if(text.includes(entity)) found.push({group,entity});
+ }
+ return found;
+}
+function hasEventEntityConflict(a,b){
+ const entsA=eventEntities(a),entsB=eventEntities(b);
+ for(const group of CONFLICT_ENTITY_GROUPS){
+  const inA=new Set(entsA.filter(x=>x.group===group).map(x=>x.entity));
+  const inB=new Set(entsB.filter(x=>x.group===group).map(x=>x.entity));
+  if(inA.size&&inB.size&&!([...inA].some(x=>inB.has(x)))) return true;
+ }
+ return false;
+}
+function englishEventWords(title){
+ const stop=new Set("the and for from with says after into amid that this news how his her are has more live video over why new their about was its".split(" "));
+ return new Set((String(title||"").toLowerCase().match(/[a-z]{3,}/g)||[]).filter(w=>!stop.has(w)).map(w=>w.replace(/s$/,"")));
+}
+function newsItemsSameEvent(a,b){
+ const tsA=Date.parse(a.published_at||a.collected_at||""),tsB=Date.parse(b.published_at||b.collected_at||"");
+ if(!Number.isFinite(tsA)||!Number.isFinite(tsB)||Math.abs(tsA-tsB)>3*86400000) return false;
+ const normA=normalizeEventTitle(a.title),normB=normalizeEventTitle(b.title);
+ if(hasEventEntityConflict(normA,normB)) return false;
+ const wordsA=englishEventWords(a.title),wordsB=englishEventWords(b.title);
+ const gramsA=zhEventBigrams(normA),gramsB=zhEventBigrams(normB);
+ const shared=[...wordsA].filter(w=>wordsB.has(w));
+ const common=[...gramsA].filter(g=>gramsB.has(g));
+ const en=shared.length/Math.max(1,Math.min(wordsA.size,wordsB.size));
+ const zh=common.length/Math.max(1,Math.min(gramsA.size,gramsB.size));
+ if(common.length>=4&&zh>=0.40) return true;
+ return (shared.length>=4&&en>=0.60&&common.length>=3)||(common.length>=6&&zh>=0.52)||(shared.length>=3&&en>=0.50&&common.length>=6&&zh>=0.33);
+}
+function mergeDiscussionsByUrl(a,b){
+ const out=[...(a||[])];
+ for(const x of b||[]){
+  if(!out.some(y=>y.discussion_url===x.discussion_url||(y.title&&x.title&&y.title===x.title))) out.push(x);
+ }
+ return out;
+}
+function mergeRedditByUrl(a,b){
+ const out=[...(a||[])];
+ for(const x of b||[]){
+  if(!out.some(y=>y.url===x.url||(y.title&&x.title&&y.title===x.title))) out.push(x);
+ }
+ return out;
+}
+function itemRichness(row){
+ const textLen=(row.reading_text||row.summary||"").length;
+ const hasImg=row.image_url?1:0;
+ const ts=Date.parse(row.published_at||row.collected_at||"")||0;
+ return {textLen,hasImg,ts};
+}
+function pickClusterPrimary(cluster){
+ return [...cluster].sort((a,b)=>{const ra=itemRichness(a),rb=itemRichness(b);if(rb.textLen!==ra.textLen) return rb.textLen-ra.textLen;if(rb.hasImg!==ra.hasImg) return rb.hasImg-ra.hasImg;return rb.ts-ra.ts})[0];
+}
+function mergeNewsCluster(cluster){
+ if(cluster.length<=1) return cluster[0];
+ const primary=pickClusterPrimary(cluster);
+ const others=cluster.filter(x=>x.fingerprint!==primary.fingerprint);
+ const related_sources=[];
+ const seenUrl=new Set();
+ for(const row of others){
+  if(!row.url||seenUrl.has(row.url)) continue;
+  seenUrl.add(row.url);
+  related_sources.push({source_name:row.source_name||"",title:row.title||"",url:row.url||"",published_at:row.published_at||row.collected_at||""});
+ }
+ let image_url=primary.image_url||"";
+ let polymarket=primary.polymarket||null;
+ let community={hn:[...(primary.community?.hn||[])],reddit:[...(primary.community?.reddit||[])]};
+ for(const row of others){
+  if(!image_url&&row.image_url) image_url=row.image_url;
+  if(!polymarket&&row.polymarket) polymarket=row.polymarket;
+  community={hn:mergeDiscussionsByUrl(community.hn,row.community?.hn),reddit:mergeRedditByUrl(community.reddit,row.community?.reddit)};
+ }
+ return {...primary,image_url,polymarket,community,related_sources,source_count:1+related_sources.length};
+}
+function clusterNewsItems(items){
+ if(!items?.length) return [];
+ const parent=items.map((_,i)=>i);
+ const find=i=>{while(parent[i]!==i){parent[i]=parent[parent[i]];i=parent[i]}return i};
+ const unite=(a,b)=>{const ra=find(a),rb=find(b);if(ra!==rb)parent[ra]=rb};
+ for(let i=0;i<items.length;i++) for(let j=i+1;j<items.length;j++) if(newsItemsSameEvent(items[i],items[j])) unite(i,j);
+ const groups=new Map();
+ for(let i=0;i<items.length;i++){const root=find(i);if(!groups.has(root))groups.set(root,[]);groups.get(root).push(items[i])}
+ return [...groups.values()].map(mergeNewsCluster);
+}
 function isSportsItem(row){
  const text=[row.title||"",row.summary||""].filter(Boolean).join(" ");
  if(SPORTS_EMERGENCY_ZH.test(text)||SPORTS_EMERGENCY_EN.test(text))return false;
@@ -224,7 +331,7 @@ async function fetchPolymarket(query){
 }
 const PAGE = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>全球新闻中心</title><style>
 body{margin:0;background:#f3f5f9;color:#172033;font:16px system-ui,"PingFang SC",sans-serif}.wrap{max-width:1000px;margin:auto;padding:24px 16px}h1{margin:0;font-size:26px}.muted,.meta{color:#64748b;font-size:13px}.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:20px 0}.tabs button{border:1px solid #d6deea;background:white;border-radius:18px;padding:8px 13px}.tabs .active{background:#234bb5;color:white}.item,.report,.empty{background:white;border:1px solid #e2e8f0;border-radius:12px;padding:16px;margin:10px 0}.item h2{font-size:18px;line-height:1.45;margin:8px 0}.item a{color:inherit;text-decoration:none}.item a:hover{text-decoration:underline}.summary{line-height:1.65;color:#334155;white-space:pre-wrap}.tag{background:#eef2ff;color:#3730a3;padding:3px 7px;border-radius:5px;font-size:12px}.empty{text-align:center;padding:40px;color:#64748b}@media(prefers-color-scheme:dark){body{background:#101827;color:#e5e7eb}.item,.report,.empty,.tabs button{background:#182235;color:#e5e7eb;border-color:#334155}.summary{color:#cbd5e1}.muted,.meta{color:#9ca3af}}
-.datebar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;background:white;border:1px solid #dce5df;border-radius:12px;padding:12px;margin:18px 0}.datebar input,.datebar button{font:inherit;border:1px solid #d5dfd9;border-radius:8px;background:white;color:#24443e;padding:9px;min-height:40px}.datebar button{cursor:pointer}.datebar b{margin-right:auto;color:#193f3b}@media(max-width:520px){.datebar{gap:6px}.datebar b{width:100%}.datebar button,.datebar input{flex:1;min-width:0}}:root{color-scheme:light}body{margin:0;background:#f7f6f2;color:#182c30;font-family:"PingFang SC","Microsoft YaHei",sans-serif}.wrap{max-width:760px;padding:36px 18px}.wrap>h1{font:700 clamp(32px,6vw,52px)/1.2 "Songti SC",serif;color:#183d3d}.tabs{position:sticky;top:0;z-index:2;background:#f7f6f2;overflow-x:auto;flex-wrap:nowrap;padding:12px 0;border-bottom:1px solid #bfcac5}.tabs button{flex:none;cursor:pointer;background:white;color:#294843;min-height:42px}.tabs .active{background:#19534b;color:white}.item,.report,.empty{background:white;color:#193139;padding:clamp(16px,4vw,32px);border-radius:12px}.item header,.item footer{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.item h2{font:700 clamp(19px,3vw,25px)/1.5 "Songti SC",serif;margin:14px 0}.item time,.item footer,.muted,.meta{color:#536a69;font-size:13px}.tag{background:#e2f0eb;color:#19534b}.summary{font-size:17px;line-height:1.85;color:#283d40}.photo{width:100%;max-height:410px;object-fit:contain;background:#f2f4f1;border-radius:6px}.item .more{display:inline-block;padding:10px 0;color:#18574f;font-weight:650}.item footer{border-top:1px solid #e2e8e5;margin-top:12px}.tabs button:focus-visible,a:focus-visible{outline:3px solid #a15d16}.pmcap{display:inline-flex;align-items:center;gap:6px;background:#eef6ff;border:1px solid #b8d4f0;color:#1e4a7a;border-radius:16px;padding:4px 10px;font-size:12px;margin:6px 0}.hnmeta{font-size:12px;color:#6b5b3e;margin:4px 0}.pulse-btn{margin-top:10px;border:1px solid #c5d4cf;background:#f4faf7;color:#19534b;border-radius:8px;padding:8px 12px;cursor:pointer;font:inherit}.pulse-drawer{margin-top:10px;padding:12px;border:1px solid #d7e2dd;border-radius:8px;background:#fafcfa;font-size:14px}.pulse-drawer h3{font-size:14px;margin:8px 0 4px}.pulse-drawer ul{margin:0;padding-left:18px}.pulse-drawer li{margin:4px 0}.pulse-loading{color:#64748b;font-size:13px}
+.datebar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;background:white;border:1px solid #dce5df;border-radius:12px;padding:12px;margin:18px 0}.datebar input,.datebar button{font:inherit;border:1px solid #d5dfd9;border-radius:8px;background:white;color:#24443e;padding:9px;min-height:40px}.datebar button{cursor:pointer}.datebar b{margin-right:auto;color:#193f3b}@media(max-width:520px){.datebar{gap:6px}.datebar b{width:100%}.datebar button,.datebar input{flex:1;min-width:0}}:root{color-scheme:light}body{margin:0;background:#f7f6f2;color:#182c30;font-family:"PingFang SC","Microsoft YaHei",sans-serif}.wrap{max-width:760px;padding:36px 18px}.wrap>h1{font:700 clamp(32px,6vw,52px)/1.2 "Songti SC",serif;color:#183d3d}.tabs{position:sticky;top:0;z-index:2;background:#f7f6f2;overflow-x:auto;flex-wrap:nowrap;padding:12px 0;border-bottom:1px solid #bfcac5}.tabs button{flex:none;cursor:pointer;background:white;color:#294843;min-height:42px}.tabs .active{background:#19534b;color:white}.item,.report,.empty{background:white;color:#193139;padding:clamp(16px,4vw,32px);border-radius:12px}.item header,.item footer{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.item h2{font:700 clamp(19px,3vw,25px)/1.5 "Songti SC",serif;margin:14px 0}.item time,.item footer,.muted,.meta{color:#536a69;font-size:13px}.tag{background:#e2f0eb;color:#19534b}.summary{font-size:17px;line-height:1.85;color:#283d40}.photo{width:100%;max-height:410px;object-fit:contain;background:#f2f4f1;border-radius:6px}.item .more{display:inline-block;padding:10px 0;color:#18574f;font-weight:650}.item footer{border-top:1px solid #e2e8e5;margin-top:12px}.tabs button:focus-visible,a:focus-visible{outline:3px solid #a15d16}.pmcap{display:inline-flex;align-items:center;gap:6px;background:#eef6ff;border:1px solid #b8d4f0;color:#1e4a7a;border-radius:16px;padding:4px 10px;font-size:12px;margin:6px 0}.hnmeta{font-size:12px;color:#6b5b3e;margin:4px 0}.pulse-btn{margin-top:10px;border:1px solid #c5d4cf;background:#f4faf7;color:#19534b;border-radius:8px;padding:8px 12px;cursor:pointer;font:inherit}.pulse-drawer{margin-top:10px;padding:12px;border:1px solid #d7e2dd;border-radius:8px;background:#fafcfa;font-size:14px}.pulse-drawer h3{font-size:14px;margin:8px 0 4px}.pulse-drawer ul{margin:0;padding-left:18px}.pulse-drawer li{margin:4px 0}.pulse-loading{color:#64748b;font-size:13px}.multi-src{font-size:12px;color:#19534b;background:#e8f2ed;border:1px solid #b9cfc4;border-radius:14px;padding:3px 9px;margin:4px 0;display:inline-block}.related-sources{margin-top:10px;font-size:13px;color:#425b59}.related-sources summary{cursor:pointer;color:#18574f;font-weight:600}.related-sources ul{margin:6px 0 0;padding-left:18px}.related-sources li{margin:4px 0;line-height:1.5}
 </style><main class="wrap"><h1>全球新闻中心</h1><p class="muted">各站重点新闻 · 每站最多五条 · 按北京时间倒序</p><div id="status" class="muted">正在连接…</div><section class="datebar"><button type="button" id="collect">手动采集最新新闻</button><b id="dateTitle">当天新闻</b><button id="prevDay">‹ 前一天</button><input id="datePicker" type="date" aria-label="选择日期"><button id="nextDay">后一天 ›</button></section><div id="dispatchState" role="status" class="muted"></div><nav class="tabs"><button class="active" data-cat="">全部</button><button data-cat="国际政治">国际政治</button><button data-cat="AI与科技">人工智能与科技</button><button data-cat="全球经济金融">全球经济金融</button><button data-cat="社会与突发">社会与突发</button><button data-cat="reports">采集记录</button></nav><section id="content"><div class="empty">加载中…</div></section></main><script>
 const box=document.querySelector('#content'),status=document.querySelector('#status'),picker=document.querySelector('#datePicker'),dateTitle=document.querySelector('#dateTitle'),prev=document.querySelector('#prevDay'),next=document.querySelector('#nextDay');let cat='',selectedDate=beijingToday();function beijingToday(){const p=new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).reduce((a,x)=>(a[x.type]=x.value,a),{});return p.year+'-'+p.month+'-'+p.day}function today(){return beijingToday()}function showDate(){dateTitle.textContent=selectedDate+'（北京时间）';picker.value=selectedDate;next.disabled=selectedDate>=today()}function shiftDate(n){const d=new Date(selectedDate+'T12:00:00Z');d.setUTCDate(d.getUTCDate()+n);selectedDate=d.toISOString().slice(0,10);showDate();load()}
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
@@ -282,7 +389,11 @@ async function load(){
    if(x.polymarket){const p=x.polymarket,u=safeHref(p.url);pm='<div class="pmcap">预测市场 · '+esc(p.outcome)+' '+esc(p.probability)+'% · '+esc(p.event_title||p.question||'')+(u?' <a target="_blank" rel="noopener noreferrer" href="'+esc(u)+'">↗</a>':'')+'</div>';}
    const pc=pulseCount(x);
    const pulse='<button type="button" class="pulse-btn" data-fp="'+esc(x.fingerprint)+'">社区与市场脉络'+(pc?' ('+pc+')':'')+'</button><div class="pulse-drawer" hidden></div>';
-   return '<article class="item"><header><span class="tag">'+esc(x.category==='AI与科技'?'人工智能与科技':x.category)+'</span><time>'+date(x.published_at||x.collected_at)+'</time></header><h2>'+title+'</h2>'+pm+meta+image+(text?'<p class="summary">'+esc(text)+'</p>':'<p class="muted">暂未取得原文内容，可打开来源网站查看。</p>')+pulse+'<footer><span>'+esc(x.source_name)+' · 待核实</span>'+link+'</footer></article>';
+   const rel=x.related_sources||[];
+   const multi=rel.length?'<div class="multi-src">多源报道 · 共 '+esc(x.source_count||1+rel.length)+' 家</div>':'';
+   const related=rel.length?'<details class="related-sources"><summary>同题报道（另有 '+esc(rel.length)+' 家媒体）</summary><ul>'+rel.map(r=>{const u=safeHref(r.url);return '<li>'+esc(r.source_name)+' · '+esc(r.title)+(u?' <a target="_blank" rel="noopener noreferrer" href="'+esc(u)+'">原文 ↗</a>':'')+'</li>'}).join('')+'</ul></details>':'';
+   const footerSources=rel.length?multi+' · '+esc(x.source_name)+(rel.length?('、'+rel.map(r=>esc(r.source_name)).join('、')):''):esc(x.source_name);
+   return '<article class="item"><header><span class="tag">'+esc(x.category==='AI与科技'?'人工智能与科技':x.category)+'</span><time>'+date(x.published_at||x.collected_at)+'</time></header>'+multi+'<h2>'+title+'</h2>'+pm+meta+image+(text?'<p class="summary">'+esc(text)+'</p>':'<p class="muted">暂未取得原文内容，可打开来源网站查看。</p>')+related+pulse+'<footer><span>'+footerSources+' · 待核实</span>'+link+'</footer></article>';
   }).join('')||'<div class="empty">暂无记录，等待下一轮采集。</div>';
   box.querySelectorAll('.pulse-btn').forEach(b=>b.onclick=()=>togglePulse(b,b.dataset.fp));
  }catch{if(id===sequence){status.textContent='读取失败';box.innerHTML='<div class="empty">暂时无法读取数据，请稍后刷新。</div>'}}
