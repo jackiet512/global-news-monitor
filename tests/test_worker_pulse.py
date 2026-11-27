@@ -340,6 +340,142 @@ new vm.Script(m[1]);
 console.log('OK');
 """
 
+BEIJING_TIMEZONE_SCRIPT = """
+import { pathToFileURL } from 'url';
+import { readFileSync } from 'fs';
+
+const ROOT = process.argv[2];
+const { DatabaseSync } = await import('node:sqlite');
+const raw = new DatabaseSync(':memory:');
+raw.exec(readFileSync(ROOT + '/migrations/0001_init.sql', 'utf8'));
+raw.exec(readFileSync(ROOT + '/migrations/0002_context.sql', 'utf8'));
+
+class Stmt {
+  constructor(db, sql){ this.db = db; this.sql = sql; this.bound = []; }
+  bind(...a){ this.bound = a; return this; }
+  run(){
+    if (this.sql.startsWith('CREATE TABLE')) this.db.exec(this.sql);
+    else this.db.prepare(this.sql).run(...this.bound);
+    return { meta: { changes: 1 } };
+  }
+  all(){ return { results: this.db.prepare(this.sql).all(...this.bound) }; }
+  first(){ return this.db.prepare(this.sql).get(...this.bound) || null; }
+}
+
+class MemDB {
+  constructor(db){ this.db = db; }
+  prepare(sql){ return new Stmt(this.db, sql); }
+  async batch(stmts){
+    const results = [];
+    for (const s of stmts) {
+      s.run();
+      const ch = this.db.prepare('SELECT changes() AS c').get();
+      results.push({ results: [{ new_count: ch?.c ?? 0 }] });
+    }
+    return results;
+  }
+  async run(stmt){ return stmt.run(); }
+  async all(stmt){ return stmt.all(); }
+  async first(stmt){ return stmt.first(); }
+}
+
+const mod = await import(pathToFileURL(ROOT + '/worker/src/index.js').href);
+const handler = mod.default;
+const env = { DB: new MemDB(raw), INGEST_TOKEN: 'test-token' };
+
+function endsBj(v){ return typeof v === 'string' && v.endsWith('+08:00'); }
+function assertBj(v, label){ if (!endsBj(v)) throw new Error(label + ': ' + JSON.stringify(v)); }
+
+const fpA = 'a'.repeat(64);
+const fpB = 'b'.repeat(64);
+const fpC = 'c'.repeat(64);
+const fpD = 'd'.repeat(64);
+
+const ingest = await handler.fetch(new Request('http://x/api/ingest', { method: 'POST', headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' }, body: JSON.stringify({
+  run_at: '2026-01-15T02:00:00Z',
+  candidate_count: 3, source_error_count: 0, source_errors: [], ranked: false,
+  items: [
+    { fingerprint: fpA, source_name: '路透社', category: '社会与突发', title: '感恩节大风暴给美国带来洪水和航班延误', url: 'https://reuters.com/storm-a', published_at: '2026-01-15T14:00:00Z', collected_at: '2026-01-15T14:00:00Z' },
+    { fingerprint: fpB, source_name: '美联社', category: '社会与突发', title: '强大的感恩节风暴导致洪水、停电', url: 'https://apnews.com/storm-b', published_at: '2026-01-15T09:00:00-05:00', collected_at: '2026-01-15T09:00:00-05:00' },
+    { fingerprint: fpC, source_name: '路透社', category: '国际政治', title: '美联储宣布维持利率不变', url: 'https://reuters.com/fed', published_at: '2026-01-14T08:00:00Z', collected_at: '2026-01-14T08:00:00Z' },
+  ]
+}) }), env);
+if (!(await ingest.json()).ok) throw new Error('ingest failed');
+
+raw.prepare('INSERT INTO reports (run_at,candidate_count,new_count,source_error_count,summary,created_at) VALUES (?,?,?,?,?,?)').run(
+  '2026-01-15T02:00:00+00:00', 5, 3, 0, '旧报告', '2026-01-15T02:00:00+00:00'
+);
+raw.prepare('INSERT INTO reports (run_at,candidate_count,new_count,source_error_count,summary,created_at) VALUES (?,?,?,?,?,?)').run(
+  '2026-01-15T22:00:00+08:00', 10, 8, 1, '新报告', '2026-01-15T22:00:00+08:00'
+);
+
+const reports = await handler.fetch(new Request('http://x/api/reports?date=2026-01-15'), env);
+const repData = await reports.json();
+if (repData.items.length < 2) throw new Error('expected multiple reports');
+for (const row of repData.items) {
+  assertBj(row.run_at, 'report.run_at');
+  assertBj(row.created_at, 'report.created_at');
+}
+const newest = repData.items[0].run_at;
+const oldest = repData.items[repData.items.length - 1].run_at;
+if (Date.parse(newest) <= Date.parse(oldest)) throw new Error('reports not desc: ' + newest + ' vs ' + oldest);
+
+const news = await handler.fetch(new Request('http://x/api/news?date=2026-01-15&limit=20'), env);
+const newsData = await news.json();
+if (!newsData.items?.length) throw new Error('no news items');
+
+function checkNewsItem(item){
+  assertBj(item.published_at, 'news.published_at');
+  assertBj(item.collected_at, 'news.collected_at');
+  assertBj(item.created_at, 'news.created_at');
+  for (const rel of item.related_sources || []) assertBj(rel.published_at, 'related_sources.published_at');
+}
+for (const item of newsData.items) checkNewsItem(item);
+
+const times = newsData.items.map(x => Date.parse(x.published_at || x.collected_at || ''));
+for (let i = 1; i < times.length; i++) {
+  if (times[i] > times[i - 1]) throw new Error('news not sorted desc: ' + JSON.stringify(newsData.items.map(x => x.published_at)));
+}
+
+const clustered = newsData.items.find(x => (x.related_sources || []).length);
+if (!clustered) throw new Error('expected clustered item with related_sources');
+
+raw.prepare('INSERT INTO news_context (fingerprint,polymarket_json,community_json,query_terms,updated_at) VALUES (?,?,?,?,?)').run(
+  fpD, null, JSON.stringify({ hn: [{ title: 't', points: 1, num_comments: 1, discussion_url: 'https://news.ycombinator.com/item?id=9' }], reddit: [] }),
+  '[]', '2026-01-15T06:00:00+00:00'
+);
+raw.prepare('INSERT INTO news_items (fingerprint,source_name,category,title,url,summary,published_at,collected_at,verification_status) VALUES (?,?,?,?,?,?,?,?,?)').run(
+  fpD, '路透社', '国际政治', '脉搏测试', 'https://example.com/pulse', '', '2026-01-15T10:00:00Z', '2026-01-15T10:00:00Z', '待核实'
+);
+
+const realFetch = globalThis.fetch;
+globalThis.fetch = async (url) => {
+  const u = String(url);
+  if (u.includes('gamma-api.polymarket.com')) return new Response(JSON.stringify([]), { status: 200 });
+  if (u.includes('hn.algolia')) return new Response(JSON.stringify({ hits: [] }));
+  if (u.includes('reddit.com')) return new Response(JSON.stringify({ data: { children: [] } }));
+  return realFetch(url);
+};
+
+const pulse = await handler.fetch(new Request('http://x/api/pulse?fingerprint=' + fpD + '&refresh=1'), env);
+const pulseData = await pulse.json();
+if (!pulseData.ok) throw new Error('pulse refresh failed');
+assertBj(pulseData.updated_at, 'pulse.updated_at refresh');
+
+const recentUtc = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+raw.prepare('UPDATE news_context SET updated_at = ?, community_json = ? WHERE fingerprint = ?').run(
+  recentUtc,
+  JSON.stringify({ hn: [{ title: 'cached', points: 1, num_comments: 1, discussion_url: 'https://news.ycombinator.com/item?id=1' }], reddit: [] }),
+  fpD
+);
+const cached = await handler.fetch(new Request('http://x/api/pulse?fingerprint=' + fpD), env);
+const cacheData = await cached.json();
+if (!cacheData.cached) throw new Error('expected cached pulse');
+assertBj(cacheData.updated_at, 'pulse.updated_at cached');
+
+console.log('OK');
+"""
+
 
 class WorkerPulseTests(unittest.TestCase):
     def test_node_syntax(self):
@@ -386,6 +522,16 @@ class WorkerPulseTests(unittest.TestCase):
     def test_api_news_clusters_same_event(self):
         script = ROOT / "tests" / "_cluster_news.mjs"
         script.write_text(CLUSTER_SCRIPT, encoding="utf-8")
+        try:
+            r = subprocess.run(["node", str(script), str(ROOT)], capture_output=True, text=True, cwd=str(ROOT), timeout=30)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("OK", r.stdout)
+        finally:
+            script.unlink(missing_ok=True)
+
+    def test_beijing_timezone_everywhere(self):
+        script = ROOT / "tests" / "_beijing_timezone.mjs"
+        script.write_text(BEIJING_TIMEZONE_SCRIPT, encoding="utf-8")
         try:
             r = subprocess.run(["node", str(script), str(ROOT)], capture_output=True, text=True, cwd=str(ROOT), timeout=30)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)

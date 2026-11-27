@@ -61,7 +61,7 @@ def fetch(pair):
                 title=row.title.rsplit(" - ",1)[0] if indexed else row.title
                 summary="" if indexed else BeautifulSoup(row.get("summary",""),"html.parser").get_text(" ",strip=True)[:300]
                 media=row.get("media_thumbnail") or row.get("media_content") or []
-                result.append((title,row.link,summary,media[0].get("url","") if media else "",datetime.fromtimestamp(calendar.timegm(stamp),BJ).isoformat()))
+                result.append((title,row.link,summary,media[0].get("url","") if media else "",datetime.fromtimestamp(calendar.timegm(stamp),BJ).replace(microsecond=0).isoformat(timespec="seconds")))
             if result:return result
         except (OSError,ValueError):continue
     return []
@@ -117,7 +117,7 @@ def collect(relevant):
             for pattern,category in [("外交|总统|议会|大选|军队|战争|会谈|部长","国际政治"),("利率|股市|经济|财报|银行","全球经济金融"),("芯片|科技|人工智能|机器人|航天","AI与科技")]:
                 if re.search(pattern,title):cat=category;break
             en_title=original if re.search(r"[a-z]{4,}", original.lower()) else (to_english(title) if re.search("[一-鿿]", title) else original)
-            item=dict(title=title,original_title=original,en_title=en_title,url=link,source_name=name,category=cat,image_url=image,reading_text=summary,short_body=False,summary=summary,published_at=stamp,collected_at=datetime.now(BJ).isoformat(),verification_status="待核实",fingerprint=hashlib.sha256(link.encode()).hexdigest())
+            item=dict(title=title,original_title=original,en_title=en_title,url=link,source_name=name,category=cat,image_url=image,reading_text=summary,short_body=False,summary=summary,published_at=stamp,collected_at=datetime.now(BJ).replace(microsecond=0).isoformat(timespec="seconds"),verification_status="待核实",fingerprint=hashlib.sha256(link.encode()).hexdigest())
             clue=incident_clues(item)
             if any(matching_incident(clue,old) for old in selected_clues):continue
             selected_clues.append(clue)
@@ -131,7 +131,7 @@ def collect(relevant):
         if hn_status == "unavailable":
             errors.append(dict(source="Hacker News", error="HN Algolia 不可用"))
         for row in hn_items:
-            row["collected_at"] = datetime.now(BJ).isoformat()
+            row["collected_at"] = datetime.now(BJ).replace(microsecond=0).isoformat(timespec="seconds")
             row["verification_status"] = "待核实"
             key = re.sub(r"[^一-鿿a-z0-9]", "", row["title"].lower())
             if not key or duplicate(key, seen):

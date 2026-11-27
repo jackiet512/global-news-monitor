@@ -12,6 +12,8 @@ export default {
    let b;try{b=await request.json()}catch{return json({error:"invalid_json"},400)}
    if(!b||!Array.isArray(b.items)||!b.run_at)return json({error:"invalid_payload"},400);
    if(b.items.length>500 || !Array.isArray(b.source_errors||[]) || b.items.some(x=>!x || !x.fingerprint || !x.title || !x.category || !x.source_name || !/^https?:\/\//i.test(x.url))) return json({error:"invalid_payload"},400);
+   b.run_at=toBeijingIso(b.run_at);
+   for(const x of b.items){x.published_at=toBeijingIso(x.published_at)||null;x.collected_at=toBeijingIso(x.collected_at)||b.run_at}
    const db=env.DB;
    const statements=[db.prepare("INSERT INTO reports (run_at,candidate_count,new_count,source_error_count,summary) VALUES (?,?,0,?,'')").bind(b.run_at,b.candidate_count||0,b.source_error_count||0)];
    // 同一事务内分组插入，逐组累计实际新增数；中途失败时整轮回滚。
@@ -51,8 +53,9 @@ export default {
    if(!validDate(selected))return json({error:"invalid_date"},400);
    const from=selected+"T00:00:00+08:00",to=nextDate(selected)+"T00:00:00+08:00";
    if(url.pathname==="/api/reports"){
-    const r=await env.DB.prepare("SELECT * FROM reports WHERE julianday(run_at)>=julianday(?) AND julianday(run_at)<julianday(?) ORDER BY run_at DESC LIMIT 200").bind(from,to).all();
-    return json({date:selected,items:r.results||[]});
+    const r=await env.DB.prepare("SELECT * FROM reports WHERE julianday(run_at)>=julianday(?) AND julianday(run_at)<julianday(?) ORDER BY julianday(run_at) DESC LIMIT 200").bind(from,to).all();
+    const items=(r.results||[]).map(row=>({...row,run_at:toBeijingIso(row.run_at),created_at:toBeijingIso(row.created_at)}));
+    return json({date:selected,items});
    }
    await env.DB.prepare("CREATE TABLE IF NOT EXISTS news_reading (fingerprint TEXT PRIMARY KEY,image_url TEXT,reading_text TEXT,short_body INTEGER)").run();
    await env.DB.prepare("CREATE TABLE IF NOT EXISTS news_context (fingerprint TEXT PRIMARY KEY,polymarket_json TEXT,community_json TEXT,query_terms TEXT,updated_at TEXT NOT NULL)").run();
@@ -65,7 +68,7 @@ export default {
     const cleanCommunity={hn:community.hn||[],reddit:community.reddit||[]};
     return {...row,polymarket:parseJsonField(row.polymarket_json),community:cleanCommunity,hn_meta,query_terms:parseJsonField(row.query_terms),polymarket_json:undefined,community_json:undefined};
    }).filter(row=>!isSportsItem(row));
-   const clustered=clusterNewsItems(items).slice(0,n);
+   const clustered=clusterNewsItems(items).sort((a,b)=>Date.parse(b.published_at||b.collected_at||"")-Date.parse(a.published_at||a.collected_at||"")).slice(0,n).map(normalizeNewsTimes);
    return json({date:selected,items:clustered});
   }
   if(url.pathname==="/api/pulse"){
@@ -82,12 +85,12 @@ export default {
    const cleanCommunity=cleanPulseCommunity(communityRaw);
    const hasCommunity=cleanCommunity.hn.length||cleanCommunity.reddit.length;
    if(!refresh&&fresh&&hasCommunity){
-    return json({ok:true,fingerprint:fp,cached:true,polymarket,community:cleanCommunity,query_terms:queryTerms,source_status:{hn:cleanCommunity.hn.length?"ok":"empty",reddit:cleanCommunity.reddit.length?"ok":"empty",polymarket:polymarket?"ok":"empty"},updated_at:row.updated_at});
+    return json({ok:true,fingerprint:fp,cached:true,polymarket,community:cleanCommunity,query_terms:queryTerms,source_status:{hn:cleanCommunity.hn.length?"ok":"empty",reddit:cleanCommunity.reddit.length?"ok":"empty",polymarket:polymarket?"ok":"empty"},updated_at:toBeijingIso(row.updated_at)});
    }
    const q=(Array.isArray(queryTerms)&&queryTerms.length?queryTerms.join(" "):extractTerms(row.title)).trim();
    const sourceStatus={hn:"empty",reddit:"empty",polymarket:polymarket?"ok":"empty"};
    if(!q){
-    const updated=new Date().toISOString();
+    const updated=toBeijingIso(Date.now());
     await env.DB.prepare("INSERT OR REPLACE INTO news_context (fingerprint,polymarket_json,community_json,query_terms,updated_at) VALUES (?,?,?,?,?)").bind(fp,safeJsonString(polymarket,8000),safeJsonString(communityRaw,16000),safeJsonString(queryTerms,2000),updated).run();
     return json({ok:true,fingerprint:fp,cached:false,polymarket,community:cleanPulseCommunity(communityRaw),query_terms:queryTerms,source_status:sourceStatus,updated_at:updated});
    }
@@ -106,7 +109,7 @@ export default {
     polymarket=pmSettle.value;
     sourceStatus.polymarket=polymarket?"ok":"empty";
    }else if(!polymarket) sourceStatus.polymarket="unavailable";
-   const updated=new Date().toISOString();
+   const updated=toBeijingIso(Date.now());
    await env.DB.prepare("INSERT OR REPLACE INTO news_context (fingerprint,polymarket_json,community_json,query_terms,updated_at) VALUES (?,?,?,?,?)").bind(fp,safeJsonString(polymarket,8000),safeJsonString(communityRaw,16000),safeJsonString(queryTerms,2000),updated).run();
    return json({ok:true,fingerprint:fp,cached:false,polymarket,community:cleanPulseCommunity(communityRaw),query_terms:queryTerms,source_status:sourceStatus,updated_at:updated});
   }
@@ -271,6 +274,31 @@ function isSportsItem(row){
  if(SPORTS_PATH.test(path))return true;
  if(SPORTS_EN.test(text)||SPORTS_ZH.test(text))return true;
  return false;
+}
+function toBeijingIso(value){
+ if(value==null||value==="")return value||null;
+ if(typeof value==="number"&&Number.isFinite(value)){
+  const ms=value>1e12?value:value*1000;
+  if(!Number.isFinite(Date.parse(new Date(ms).toISOString())))return value||null;
+  return formatBeijingMs(ms);
+ }
+ let text=String(value).trim();
+ if(!text)return value||null;
+ if(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text))text=text.replace(" ","T")+"Z";
+ else text=text.replace(/Z$/,"+00:00");
+ const parsed=Date.parse(text);
+ if(!Number.isFinite(parsed))return value||null;
+ return formatBeijingMs(parsed);
+}
+function formatBeijingMs(ms){
+ const t=ms+8*3600000,u=new Date(t);
+ const y=u.getUTCFullYear(),m=String(u.getUTCMonth()+1).padStart(2,"0"),d=String(u.getUTCDate()).padStart(2,"0");
+ const h=String(u.getUTCHours()).padStart(2,"0"),mi=String(u.getUTCMinutes()).padStart(2,"0"),s=String(u.getUTCSeconds()).padStart(2,"0");
+ return `${y}-${m}-${d}T${h}:${mi}:${s}+08:00`;
+}
+function normalizeNewsTimes(row){
+ const related=(row.related_sources||[]).map(r=>({...r,published_at:toBeijingIso(r.published_at)}));
+ return {...row,published_at:toBeijingIso(row.published_at),collected_at:toBeijingIso(row.collected_at),created_at:toBeijingIso(row.created_at),related_sources:related};
 }
 function cors(){return {"access-control-allow-origin":"*","access-control-allow-methods":"GET,POST,OPTIONS","access-control-allow-headers":"Authorization,Content-Type"}}
 function json(v,s=200){return new Response(JSON.stringify(v),{status:s,headers:{...cors(),"content-type":"application/json; charset=utf-8","cache-control":"no-store"}})}

@@ -56,7 +56,7 @@ def _bj_iso(stamp):
         dt = datetime.now(timezone.utc)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(BJ).isoformat()
+    return dt.astimezone(BJ).replace(microsecond=0).isoformat(timespec="seconds")
 
 
 def _strip_html(text):

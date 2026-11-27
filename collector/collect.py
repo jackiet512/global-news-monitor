@@ -1,6 +1,6 @@
 """RSS candidate collector; feed items are not independently verified facts."""
 import hashlib,json,os,sys,time,urllib.request
-from datetime import datetime,timezone
+from datetime import datetime,timezone,timedelta
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from bs4 import BeautifulSoup
@@ -11,6 +11,30 @@ ROOT=Path(__file__).resolve().parents[1]
 SOURCES=json.loads((ROOT/"collector"/"sources.json").read_text(encoding="utf-8"))["sources"]
 OUT=Path(os.environ.get("OUTPUT_FILE",ROOT/"collector"/"latest_run.json"))
 EDITORIAL=json.loads((ROOT/"worker/src/editorial.json").read_text(encoding="utf-8"))
+BJ=timezone(timedelta(hours=8))
+
+def to_beijing_iso(value):
+ if value is None:return ""
+ if isinstance(value,(int,float)):
+  try:
+   dt=datetime.fromtimestamp(value/1000 if value>1e12 else value,tz=timezone.utc)
+  except (OSError,OverflowError,ValueError):return ""
+ else:
+  text=str(value).strip()
+  if not text:return ""
+  try:
+   if " " in text and "T" not in text:text=text.replace(" ","T")+"+00:00"
+   text=text.replace("Z","+00:00")
+   dt=datetime.fromisoformat(text)
+   if dt.tzinfo is None:dt=dt.replace(tzinfo=timezone.utc)
+  except (TypeError,ValueError):return ""
+ return dt.astimezone(BJ).replace(microsecond=0).isoformat(timespec="seconds")
+
+def _ts_key(value):
+ iso=to_beijing_iso(value)
+ if not iso:return 0
+ try:return datetime.fromisoformat(iso).timestamp()
+ except ValueError:return 0
 
 def relevant(title):
  return any(word in title for word in EDITORIAL["keep"]) or not any(
@@ -23,7 +47,10 @@ def main():
  items,errors=collect(relevant)
  if not items:raise RuntimeError("未取得热榜，保留上一轮结果")
  unique={x["fingerprint"]:x for x in items}
- report={"ranked":True,"run_at":datetime.now(timezone.utc).isoformat(),"candidate_count":len(items),"unique_candidate_count":len(unique),"source_error_count":len(errors),"source_errors":errors,"items":sorted(unique.values(),key=lambda x:x.get("published_at") or "",reverse=True),"note":"RSS候选信息，尚未完成多源交叉核验；不得直接视为已确认重大新闻。"}
+ for x in unique.values():
+  x["published_at"]=to_beijing_iso(x.get("published_at"))
+  x["collected_at"]=to_beijing_iso(x.get("collected_at"))
+ report={"ranked":True,"run_at":datetime.now(BJ).replace(microsecond=0).isoformat(timespec="seconds"),"candidate_count":len(items),"unique_candidate_count":len(unique),"source_error_count":len(errors),"source_errors":errors,"items":sorted(unique.values(),key=_ts_key,reverse=True),"note":"RSS候选信息，尚未完成多源交叉核验；不得直接视为已确认重大新闻。"}
  OUT.parent.mkdir(parents=True,exist_ok=True);OUT.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8")
  endpoint=os.getenv("NEWS_INGEST_URL");token=os.getenv("NEWS_INGEST_TOKEN")
  if endpoint and token:
